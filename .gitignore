@@ -1,0 +1,5 @@
+/qmk/
+/Keyboard/firmware/.toolchain/
+/Keyboard/firmware/build/
+/Keyboard/script-replay/.venv/
+.cursor/

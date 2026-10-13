@@ -1,0 +1,4 @@
+# Let the logged-in user claim raw HID interface 1 on the Hackberry keyboard.
+# The boot keyboard interface stays with the kernel.
+SUBSYSTEM=="usb", ATTR{idVendor}=="4242", ATTR{idProduct}=="0003", MODE="0660", GROUP="users"
+KERNEL=="hidraw*", ATTRS{idVendor}=="4242", ATTRS{idProduct}=="0003", MODE="0660", GROUP="users"

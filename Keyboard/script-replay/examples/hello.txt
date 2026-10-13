@@ -1,0 +1,2 @@
+STRING Hello from the Hackberry.
+ENTER
