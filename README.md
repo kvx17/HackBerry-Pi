@@ -1,4 +1,4 @@
-# Hackberry Pi CM5 — Modified Linux Layout  
+# Hackberry Pi CM5 - Collection of files, scripts, and 3d files
 Custom key‑layer configuration for the Zitaotech's  [Hackberry Pi CM5](https://github.com/ZitaoTech/HackberryPiCM5/tree/main)
 
 See  
@@ -8,3 +8,9 @@ See
 
 **OS**:
 - [Parrot OS](/OS/Parrot%20OS/ParrotOS.md)
+
+
+
+Other Releant Repositories
+https://github.com/ZitaoTech/HackberryPiCM5
+https://github.com/CNflysky/hackberrypiq20/tree/main

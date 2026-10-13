@@ -7,3 +7,8 @@ Kernel `power_supply` support varies by distro. On some setups you need a usersp
 OS-specific guides:
 
 - [Parrot OS battery tray](/OS/Parrot%20OS/Battery/ParrotOS_Battery.md)
+
+
+
+Relevant Repos:
+- https://github.com/CNflysky/hackberrypiq20 
