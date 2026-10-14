@@ -24,6 +24,13 @@ Custom key‑layer configuration for the Zitaotech's  [Hackberry Pi CM5](https:/
 
 - **Media Play/Pause** — assigned to **F key**
 
+## Layout Images
+
+![Layer 0](layer0.png "Layer 0")
+![Layer 1](layer1.png "Layer 1")
+![Layer 2](layer2.png "Layer 2")
+
+
 ---
 
 ## Script replay
@@ -94,10 +101,4 @@ More detail is in [`script-replay/README.md`](script-replay/README.md).
 
 ---
 
-
-## Layout Images
-
-![Layer 0](layer0.png "Layer 0")
-![Layer 1](layer1.png "Layer 1")
-![Layer 2](layer2.png "Layer 2")
 
