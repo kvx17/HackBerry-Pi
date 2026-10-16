@@ -7,6 +7,9 @@
 // sits immediately below that, so this must match the real chip size.
 #define PICO_FLASH_SIZE_BYTES (2 * 1024 * 1024)
 
+// Taken from the stock HackberryPi_CM5_9900 firmware, not the Q20 schematic.
+// Rows are GP15, GP14, GP13, GP12, GP10, GP9, GP8. Columns are GP2 through GP7.
+// The Q20 uses a different set, and scanning that set leaves the 9900's right columns dead.
 #define DEBOUNCE 15
 
 #define I2C_DRIVER I2CD1
