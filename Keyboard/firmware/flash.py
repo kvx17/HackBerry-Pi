@@ -182,11 +182,16 @@ def ensure_firmware(build: bool) -> Path:
     return FIRMWARE_UF2
 
 
-def wait_for_mount(timeout: float) -> Path:
+def wait_for_mount(timeout: float, external: bool) -> Path:
     print()
-    print("Left switch stays internal, so RPI-RP2 appears on this computer.")
+    if external:
+        print("The left switch is external and the bottom USB-C is plugged into this computer.")
+        print("RPI-RP2 shows up here, not on the Hackberry.")
+    else:
+        print("Left switch stays internal, so RPI-RP2 appears on this computer.")
     print("Press the Bootloader key you already assigned. That is what opens RPI-RP2.")
-    print(f"Waiting up to {int(timeout)} seconds. Ctrl-C cancels.")
+    print("The copy starts when the drive appears. Ctrl-C cancels.")
+    print(f"Waiting up to {int(timeout)} seconds.")
     deadline = time.monotonic() + timeout
     announced_usb = False
     next_note = time.monotonic() + 10
@@ -207,8 +212,10 @@ def wait_for_mount(timeout: float) -> Path:
             next_note = time.monotonic() + 10
         time.sleep(0.5)
     raise FlashError(
-        "RPI-RP2 did not appear on this computer. The left switch has to be internal. "
-        "Hold $ and run this again. This tool cannot copy a drive that is mounted on another computer."
+        "RPI-RP2 did not appear on this computer. "
+        "Internal flash: leave the left switch internal. "
+        "Other computer: the switch has to be external and the bottom USB-C has to be plugged into this computer. "
+        "Press the Bootloader key and run this again."
     )
 
 
@@ -222,11 +229,11 @@ def wait_until_gone(mount: Path, timeout: float) -> None:
     raise FlashError("the drive is still mounted. The bootloader may have rejected the file.")
 
 
-def flash_file(src: Path, timeout: float, guard_slot: bool) -> None:
+def flash_file(src: Path, timeout: float, guard_slot: bool, external: bool = False) -> None:
     check_uf2(src, guard_slot=guard_slot)
     print(f"Image: {src}")
     print(f"Size:  {src.stat().st_size} bytes")
-    mount = wait_for_mount(timeout)
+    mount = wait_for_mount(timeout, external)
     print(f"Found {mount}")
     # The keyboard is the bootloader drive now, so it cannot answer a prompt.
     print(f"Copying {src.name} onto {mount}.")
@@ -260,26 +267,26 @@ def restore_stock(assume_yes: bool, timeout: float) -> None:
     print("Stock firmware is back. Leave the left switch internal and check the keyboard.")
 
 
-def print_other_computer() -> None:
-    image = FIRMWARE_UF2 if FIRMWARE_UF2.is_file() else None
-    print("This assistant only copies a drive mounted on this computer.")
-    print("To flash from another machine, copy the UF2 there before changing the switch.")
-    if image:
-        print(f"File: {image}")
-    else:
-        print("Build Keyboard/firmware/build/kvxducky.uf2 on the CM5 first.")
+def flash_from_other(build: bool, timeout: float) -> None:
+    src = ensure_firmware(build)
+    print()
+    print("Run this on the other computer, from a copy of this repo.")
+    print("This script copies the UF2. You do not copy it by hand.")
     print("1. Flip the left switch to external.")
-    print("2. Plug the bottom USB-C into the other computer.")
-    print("3. Hold $ until RPI-RP2 appears on that computer.")
-    print("4. Copy the UF2 onto that drive.")
-    print("5. Flip the switch back to internal before Vial or the script app.")
+    print("2. Plug the bottom USB-C into this computer.")
+    print("3. Press the Bootloader key when the script is waiting.")
+    print("4. When the drive disappears, flip the switch back to internal")
+    print("   before Vial or the script app on the Hackberry.")
+    flash_file(src, timeout, guard_slot=True, external=True)
+    print()
+    print("Flashed from this computer. Flip the left switch back to internal.")
 
 
 def menu(timeout: float) -> None:
     print("Hackberry keyboard flasher. Run this on the computer that will see RPI-RP2.")
     print("1 flash kvxducky")
     print("2 restore stock 9900 firmware")
-    print("3 steps for flashing from another computer")
+    print("3 flash from another computer")
     print("q quit")
     while True:
         try:
@@ -295,7 +302,7 @@ def menu(timeout: float) -> None:
             elif choice == "2":
                 restore_stock(False, timeout)
             elif choice == "3":
-                print_other_computer()
+                flash_from_other(False, timeout)
             else:
                 print("unknown choice")
                 continue
@@ -358,7 +365,7 @@ def main(argv: list[str]) -> int:
         elif args.cmd == "restore":
             restore_stock(args.yes, args.timeout)
         elif args.cmd == "other":
-            print_other_computer()
+            flash_from_other(args.build, args.timeout)
         else:
             parser.print_help()
             return 2

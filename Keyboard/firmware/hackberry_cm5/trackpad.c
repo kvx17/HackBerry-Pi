@@ -1,11 +1,13 @@
 // Copyright 2026 kvxducky
 // SPDX-License-Identifier: GPL-2.0-or-later
 //
-// Optical trackpad on the BlackBerry keyboard flex. I2C is shifted to 1.8 V
-// by Q6. Shutdown and reset are strapped on this PCB, so those pins are not
-// driven. Address 0x3B is read the same way as Zitao's A320 driver: one
-// burst from register 0x82. Caps Lock turns the same motion into the scroll
-// wheel.
+// ADBS-A320 / ADBM-A350 on the BlackBerry flex. I2C is GP18/GP23, shifted
+// to 1.8 V by Q6. Reset is an RC on the PCB and shutdown is tied low, so
+// those pins are not driven. The motion pin stays on the flex and does not
+// reach the RP2040, so this polls I2C.
+//
+// The sensor does not report movement until OFN_Engine1/2 are loaded.
+// Burst reads then return motion, Delta_Y, Delta_X.
 
 #include "trackpad.h"
 
@@ -14,17 +16,29 @@
 
 #define TRACKPAD_ADDR 0x3B
 #define TRACKPAD_TIMEOUT 20
-#define TRACKPAD_REG_BURST 0x82
+
+#define REG_MOTION 0x02
+#define REG_IO_MODE 0x1C
+#define REG_ENGINE1 0x60
+#define REG_ENGINE2 0x61
+
+#define BIT_MOTION (1 << 7)
+
+static bool write_reg(uint8_t reg, uint8_t val) {
+    return i2c_write_register(TRACKPAD_ADDR, reg, &val, 1, TRACKPAD_TIMEOUT) == I2C_STATUS_SUCCESS;
+}
 
 static bool read_burst(uint8_t buf[3]) {
-    return i2c_read_register(TRACKPAD_ADDR, TRACKPAD_REG_BURST, buf, 3, TRACKPAD_TIMEOUT) == I2C_STATUS_SUCCESS;
+    return i2c_read_register(TRACKPAD_ADDR, REG_MOTION, buf, 3, TRACKPAD_TIMEOUT) == I2C_STATUS_SUCCESS;
 }
 
 void pointing_device_driver_init(void) {
     i2c_init();
-    wait_ms(10);
-    uint8_t buf[3];
-    (void)read_burst(buf);
+    wait_ms(50);
+    // Power-up sequence from the Avago OFN datasheet, then burst mode.
+    write_reg(REG_ENGINE1, 0xE4);
+    write_reg(REG_ENGINE2, 0xC9);
+    write_reg(REG_IO_MODE, 0x10);
 }
 
 uint16_t pointing_device_driver_get_cpi(void) {
@@ -37,7 +51,7 @@ void pointing_device_driver_set_cpi(uint16_t cpi) {
 
 report_mouse_t pointing_device_driver_get_report(report_mouse_t mouse_report) {
     uint8_t buf[3];
-    if (!read_burst(buf)) {
+    if (!read_burst(buf) || !(buf[0] & BIT_MOTION)) {
         return mouse_report;
     }
 

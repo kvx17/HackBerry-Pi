@@ -34,14 +34,13 @@ Leave the switch internal. Check keys, the trackpad, the backlight, and Vial on 
 
 ### Flash from another computer
 
-Menu option **3** (`python3 Keyboard/firmware/flash.py other`) prints these steps. The assistant only copies a drive mounted on the machine where it is running. The switch selects which computer sees `RPI-RP2`. Set it before entering the bootloader. Flipping it while the drive is mounted moves that drive to the other side.
+On the other computer, from a copy of this repo, run `python3 Keyboard/firmware/flash.py` and choose **3** (or `python3 Keyboard/firmware/flash.py other`). The script prints the steps and copies `kvxducky.uf2` onto `RPI-RP2` itself.
 
-1. Copy `kvxducky.uf2` onto the other computer first, while the switch is still internal. Building can stay on the CM5.
+1. Start option **3** on the other computer.
 2. Flip the left switch to **external**.
-3. Plug the bottom USB-C into the other computer. It shows up as a keyboard.
-4. Hold `$`, or the fresh-keymap boot key, until `RPI-RP2` appears on that computer.
-5. Copy the UF2 onto `RPI-RP2` there.
-6. Flip the switch back to **internal** before Vial, the keyboard check, or `hackberry_script.py`. Those reach the RP2040 only on the CM5 side of the switch.
+3. Plug the bottom USB-C into that computer.
+4. Press the Bootloader key. The script copies the UF2 when the drive appears.
+5. Flip the switch back to **internal** before Vial, the keyboard check, or `hackberry_script.py`. Those reach the RP2040 only on the CM5 side of the switch.
 
 ## 2. Load the play key
 

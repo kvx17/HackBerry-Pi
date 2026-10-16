@@ -73,14 +73,13 @@ Leave the switch internal. Check typing, the trackpad, the backlight, and Vial o
 
 #### Flash from another computer
 
-Menu option **3** prints these steps. The assistant cannot copy a drive that is mounted on the other machine. Use this only when the UF2 should be copied from that machine. The switch chooses the host before you enter the bootloader. Flipping it while `RPI-RP2` is already mounted moves the drive to the other side.
+Run option **3** on the other computer, from a copy of this repo. The script builds `kvxducky.uf2` if needed, prints the steps, and copies that file onto `RPI-RP2` when the drive appears. You do not copy the UF2 by hand. The switch chooses which computer sees the drive. Set it before you enter the bootloader.
 
-1. Copy `Keyboard/firmware/build/kvxducky.uf2` onto the other computer while the switch is still internal (for example with `scp`). The build can stay on the CM5.
+1. On the other computer: `python3 Keyboard/firmware/flash.py` and choose **3**.
 2. Flip the left switch to **external**.
-3. Plug the bottom USB-C into the other computer. It enumerates as a keyboard first.
-4. Hold `$` (or the fresh-keymap boot key) until `RPI-RP2` appears on that computer. It does not appear on the Hackberry.
-5. Copy the UF2 onto `RPI-RP2` there. The drive disappears when the flash finishes.
-6. Flip the switch back to **internal** before Vial, the keyboard check, or the script app. Those talk to the RP2040 only while it is connected to the CM5.
+3. Plug the bottom USB-C into that computer.
+4. Press the Bootloader key you already assigned. The script copies the UF2 and waits until the drive disappears.
+5. Flip the switch back to **internal** before Vial, the keyboard check, or the script app. Those talk to the RP2040 only while it is connected to the CM5.
 
 ### 2. Put Script play on a key
 
