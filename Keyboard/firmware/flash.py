@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-FIRMWARE_UF2 = ROOT / "Keyboard" / "firmware" / "build" / "hackberry_cm5_vial.uf2"
+FIRMWARE_UF2 = ROOT / "Keyboard" / "firmware" / "build" / "kvxducky.uf2"
 STOCK_UF2 = ROOT / "Zitao Repository" / "Keyboard" / "HackberryPi_CM5_9900.uf2"
 BUILD = ROOT / "Keyboard" / "firmware" / "build.sh"
 SLOT_END = 0x10000000 + 0x1EE000
@@ -252,7 +252,7 @@ def flash_firmware(build: bool, timeout: float) -> None:
 def restore_stock(assume_yes: bool, timeout: float) -> None:
     if not STOCK_UF2.is_file():
         raise FlashError(f"stock image is missing: {STOCK_UF2}")
-    print("This puts the stock 9900 keyboard image back. Script replay goes away with it.")
+    print("This puts the stock 9900 keyboard image back. kvxducky goes away with it.")
     if not assume_yes and not ask("Restore the stock image?", False):
         raise FlashError("restore cancelled")
     flash_file(STOCK_UF2, timeout, guard_slot=False)
@@ -267,7 +267,7 @@ def print_other_computer() -> None:
     if image:
         print(f"File: {image}")
     else:
-        print("Build Keyboard/firmware/build/hackberry_cm5_vial.uf2 on the CM5 first.")
+        print("Build Keyboard/firmware/build/kvxducky.uf2 on the CM5 first.")
     print("1. Flip the left switch to external.")
     print("2. Plug the bottom USB-C into the other computer.")
     print("3. Hold $ until RPI-RP2 appears on that computer.")
@@ -277,7 +277,7 @@ def print_other_computer() -> None:
 
 def menu(timeout: float) -> None:
     print("Hackberry keyboard flasher. Run this on the computer that will see RPI-RP2.")
-    print("1 flash script-replay firmware")
+    print("1 flash kvxducky")
     print("2 restore stock 9900 firmware")
     print("3 steps for flashing from another computer")
     print("q quit")
@@ -302,7 +302,7 @@ def menu(timeout: float) -> None:
         except FlashError as exc:
             print(f"error: {exc}")
         print()
-        print("1 flash script-replay firmware  2 restore stock  3 other computer  q quit")
+        print("1 flash kvxducky  2 restore stock  3 other computer  q quit")
 
 
 def selftest() -> None:

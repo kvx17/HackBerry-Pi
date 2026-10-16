@@ -33,7 +33,7 @@ Custom key‑layer configuration for the Zitaotech's  [Hackberry Pi CM5](https:/
 
 ---
 
-## Script replay
+## kvxducky
 
 The CM5 copies one script into the RP2040 while the left switch is **internal**. After you flip that switch and plug the bottom USB-C into another computer, the same controller shows up there as a USB keyboard (`4242:0003`). Plugging the cable in does not type anything. Hold **Script play** for about 400 ms to start. Press it again to stop.
 
@@ -59,7 +59,7 @@ From the repo root:
 python3 Keyboard/firmware/flash.py
 ```
 
-Choose **1**. If `Keyboard/firmware/build/hackberry_cm5_vial.uf2` is missing or older than the firmware sources, the menu rebuilds it before copying. A UF2 left from an earlier build is what produced the rectangular Vial grid. Press the Bootloader key you already assigned until `RPI-RP2` appears. The copy starts on its own, because that key no longer types. The tool writes the UF2 and waits until the drive disappears. Quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`. The saved map stays across a flash until that file is loaded.
+Choose **1**. If `Keyboard/firmware/build/kvxducky.uf2` is missing or older than the firmware sources, the menu rebuilds it before copying. A UF2 left from an earlier build is what produced the rectangular Vial grid. Press the Bootloader key you already assigned until `RPI-RP2` appears. The copy starts on its own, because that key no longer types. The tool writes the UF2 and waits until the drive disappears. Quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`. The saved map stays across a flash until that file is loaded.
 
 The same steps without the menu:
 
@@ -75,7 +75,7 @@ Leave the switch internal. Check typing, the trackpad, the backlight, and Vial o
 
 Menu option **3** prints these steps. The assistant cannot copy a drive that is mounted on the other machine. Use this only when the UF2 should be copied from that machine. The switch chooses the host before you enter the bootloader. Flipping it while `RPI-RP2` is already mounted moves the drive to the other side.
 
-1. Copy `Keyboard/firmware/build/hackberry_cm5_vial.uf2` onto the other computer while the switch is still internal (for example with `scp`). The build can stay on the CM5.
+1. Copy `Keyboard/firmware/build/kvxducky.uf2` onto the other computer while the switch is still internal (for example with `scp`). The build can stay on the CM5.
 2. Flip the left switch to **external**.
 3. Plug the bottom USB-C into the other computer. It enumerates as a keyboard first.
 4. Hold `$` (or the fresh-keymap boot key) until `RPI-RP2` appears on that computer. It does not appear on the Hackberry.

@@ -1,4 +1,4 @@
-# Keyboard script replay
+# kvxducky
 
 The CM5 copies one script into the RP2040 while the left switch is internal. Flipping the switch and plugging the bottom USB-C into another computer enumerates that same controller as a keyboard (`4242:0003`). Playback starts only when **Script play** is held for about 400 ms. Plugging the cable in does not type anything.
 
@@ -22,7 +22,7 @@ From the repo root:
 python3 Keyboard/firmware/flash.py
 ```
 
-Option **1** rebuilds `Keyboard/firmware/build/hackberry_cm5_vial.uf2` when that file is missing or older than the firmware sources, waits for `RPI-RP2`, copies as soon as the drive appears, and waits for the drive to disappear. An older UF2 is copied unchanged, and that is the rectangular grid. Press the Bootloader key you already assigned while it waits. After the flash, quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`.
+Option **1** rebuilds `Keyboard/firmware/build/kvxducky.uf2` when that file is missing or older than the firmware sources, waits for `RPI-RP2`, copies as soon as the drive appears, and waits for the drive to disappear. An older UF2 is copied unchanged, and that is the rectangular grid. Press the Bootloader key you already assigned while it waits. After the flash, quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`.
 
 ```bash
 python3 Keyboard/firmware/flash.py flash
@@ -36,7 +36,7 @@ Leave the switch internal. Check keys, the trackpad, the backlight, and Vial on 
 
 Menu option **3** (`python3 Keyboard/firmware/flash.py other`) prints these steps. The assistant only copies a drive mounted on the machine where it is running. The switch selects which computer sees `RPI-RP2`. Set it before entering the bootloader. Flipping it while the drive is mounted moves that drive to the other side.
 
-1. Copy `hackberry_cm5_vial.uf2` onto the other computer first, while the switch is still internal. Building can stay on the CM5.
+1. Copy `kvxducky.uf2` onto the other computer first, while the switch is still internal. Building can stay on the CM5.
 2. Flip the left switch to **external**.
 3. Plug the bottom USB-C into the other computer. It shows up as a keyboard.
 4. Hold `$`, or the fresh-keymap boot key, until `RPI-RP2` appears on that computer.

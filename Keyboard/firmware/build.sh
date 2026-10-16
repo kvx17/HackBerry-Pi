@@ -65,6 +65,6 @@ if highest > limit:
 PY
 
 mkdir -p "$OUT"
-cp -f "$UF2" "$OUT/hackberry_cm5_vial.uf2"
-echo "Wrote $OUT/hackberry_cm5_vial.uf2"
+cp -f "$UF2" "$OUT/kvxducky.uf2"
+echo "Wrote $OUT/kvxducky.uf2"
 echo "This script does not flash the keyboard."

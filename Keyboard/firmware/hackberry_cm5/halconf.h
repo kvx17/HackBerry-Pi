@@ -1,4 +1,4 @@
-// Copyright 2026 Hackberry script-replay
+// Copyright 2026 kvxducky
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once

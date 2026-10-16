@@ -1,4 +1,4 @@
-// Copyright 2026 Hackberry script-replay
+// Copyright 2026 kvxducky
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "script_replay.h"
@@ -131,7 +131,7 @@ static void apply_names(const char *mfr, uint8_t mfr_len, const char *prod, uint
 
 static void load_default_names(void) {
     const char *mfr  = "ZitaoTech";
-    const char *prod = "HackberryPi9900";
+    const char *prod = "kvxducky";
     apply_names(mfr, (uint8_t)strlen(mfr), prod, (uint8_t)strlen(prod));
 }
 
@@ -596,7 +596,7 @@ void script_on_raw_hid(uint8_t *data, uint8_t length) {
                 text = "ZitaoTech";
                 n    = 9;
             } else if (sub == 2) {
-                text = "HackberryPi9900";
+                text = "kvxducky";
                 n    = 15;
             } else {
                 data[1] = HB_ERR_RANGE;
