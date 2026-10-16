@@ -139,28 +139,53 @@ def ask(prompt: str, default_yes: bool) -> bool:
     return answer in ("y", "yes")
 
 
-def ensure_firmware(assume_yes: bool, build: bool) -> Path:
-    if FIRMWARE_UF2.is_file():
-        check_uf2(FIRMWARE_UF2, guard_slot=True)
-        return FIRMWARE_UF2
-    print(f"{FIRMWARE_UF2.relative_to(ROOT)} is not built yet.")
-    if not (build or ask("Build it now? This can take several minutes", False)):
-        raise FlashError("firmware UF2 is missing")
+def firmware_sources() -> list[Path]:
+    firmware = ROOT / "Keyboard" / "firmware"
+    paths = [BUILD, firmware / "patch_usb_strings.py", firmware / "qmk_cli.py"]
+    source = firmware / "hackberry_cm5"
+    if source.is_dir():
+        paths.extend(path for path in source.rglob("*") if path.is_file())
+    return [path for path in paths if path.is_file()]
+
+
+def firmware_is_stale() -> bool:
+    if not FIRMWARE_UF2.is_file():
+        return True
+    built = FIRMWARE_UF2.stat().st_mtime
+    return any(path.stat().st_mtime > built for path in firmware_sources())
+
+
+def build_firmware() -> None:
     if not BUILD.is_file():
         raise FlashError(f"build script is missing: {BUILD}")
-    print("Building. The keyboard is not flashed by the build.")
+    print("Building. This can take several minutes. The keyboard is not flashed by the build.")
     result = subprocess.run(["bash", str(BUILD)], cwd=ROOT)
     if result.returncode != 0 or not FIRMWARE_UF2.is_file():
-        raise FlashError("build failed")
+        raise FlashError("build failed, so the old UF2 was not copied")
     check_uf2(FIRMWARE_UF2, guard_slot=True)
+
+
+def ensure_firmware(build: bool) -> Path:
+    # An existing UF2 is reused only when it is newer than the firmware sources.
+    # The previous flash copied that old file, which still draws the rectangle.
+    if build or firmware_is_stale():
+        if FIRMWARE_UF2.is_file():
+            print(f"{FIRMWARE_UF2.relative_to(ROOT)} is older than the firmware sources.")
+        else:
+            print(f"{FIRMWARE_UF2.relative_to(ROOT)} is not built yet.")
+        print("Rebuilding before the copy.")
+        build_firmware()
+    else:
+        built = time.strftime("%Y-%m-%d %H:%M", time.localtime(FIRMWARE_UF2.stat().st_mtime))
+        print(f"Using {FIRMWARE_UF2.relative_to(ROOT)} built {built}. Sources are not newer.")
+        check_uf2(FIRMWARE_UF2, guard_slot=True)
     return FIRMWARE_UF2
 
 
 def wait_for_mount(timeout: float) -> Path:
     print()
     print("Left switch stays internal, so RPI-RP2 appears on this computer.")
-    print("Hold $ until the keyboard drops and the drive appears. A short tap of $ still types $.")
-    print("On a fresh keymap the boot key is layer 2, row 5, column 4.")
+    print("Press the Bootloader key you already assigned. That is what opens RPI-RP2.")
     print(f"Waiting up to {int(timeout)} seconds. Ctrl-C cancels.")
     deadline = time.monotonic() + timeout
     announced_usb = False
@@ -197,14 +222,14 @@ def wait_until_gone(mount: Path, timeout: float) -> None:
     raise FlashError("the drive is still mounted. The bootloader may have rejected the file.")
 
 
-def flash_file(src: Path, assume_yes: bool, timeout: float, guard_slot: bool) -> None:
+def flash_file(src: Path, timeout: float, guard_slot: bool) -> None:
     check_uf2(src, guard_slot=guard_slot)
     print(f"Image: {src}")
     print(f"Size:  {src.stat().st_size} bytes")
     mount = wait_for_mount(timeout)
     print(f"Found {mount}")
-    if not assume_yes and not ask(f"Copy {src.name} onto {mount}?", True):
-        raise FlashError("copy cancelled")
+    # The keyboard is the bootloader drive now, so it cannot answer a prompt.
+    print(f"Copying {src.name} onto {mount}.")
     try:
         dest = copy_uf2(src, mount)
     except OSError as exc:
@@ -213,13 +238,14 @@ def flash_file(src: Path, assume_yes: bool, timeout: float, guard_slot: bool) ->
     wait_until_gone(mount, timeout)
 
 
-def flash_firmware(assume_yes: bool, build: bool, timeout: float) -> None:
-    src = ensure_firmware(assume_yes, build)
-    flash_file(src, assume_yes, timeout, guard_slot=True)
+def flash_firmware(build: bool, timeout: float) -> None:
+    src = ensure_firmware(build)
+    flash_file(src, timeout, guard_slot=True)
     print()
     print("The keyboard should be back on the CM5. Leave the left switch internal.")
-    print("Check typing, the trackpad, the backlight, and Vial.")
-    print("Load Keyboard/script_play.vil in Vial if Script play is not on layer 2, the R key.")
+    print("Quit Vial and open it again so it reads the keyboard drawing from the new firmware.")
+    print("Then File, Load saved layout, and choose Keyboard/HackberryPi_CM5_9900.vil.")
+    print("The saved map stays across a flash until that file is loaded.")
     print("Send a script afterward with Keyboard/script-replay/hackberry_script.py.")
 
 
@@ -229,7 +255,7 @@ def restore_stock(assume_yes: bool, timeout: float) -> None:
     print("This puts the stock 9900 keyboard image back. Script replay goes away with it.")
     if not assume_yes and not ask("Restore the stock image?", False):
         raise FlashError("restore cancelled")
-    flash_file(STOCK_UF2, True, timeout, guard_slot=False)
+    flash_file(STOCK_UF2, timeout, guard_slot=False)
     print()
     print("Stock firmware is back. Leave the left switch internal and check the keyboard.")
 
@@ -265,7 +291,7 @@ def menu(timeout: float) -> None:
             return
         try:
             if choice == "1":
-                flash_firmware(False, False, timeout)
+                flash_firmware(False, timeout)
             elif choice == "2":
                 restore_stock(False, timeout)
             elif choice == "3":
@@ -310,8 +336,8 @@ def selftest() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Flash the Hackberry RP2040 from the RPI-RP2 drive")
     parser.add_argument("cmd", nargs="?", choices=("flash", "restore", "other"))
-    parser.add_argument("--yes", action="store_true", help="copy as soon as the drive appears")
-    parser.add_argument("--build", action="store_true", help="build the firmware UF2 when it is missing")
+    parser.add_argument("--yes", action="store_true", help="restore without the confirmation asked before boot mode")
+    parser.add_argument("--build", action="store_true", help="rebuild the firmware UF2 before copying")
     parser.add_argument("--timeout", type=float, default=180, help="seconds to wait for the drive")
     parser.add_argument("--selftest", action="store_true")
     return parser
@@ -328,7 +354,7 @@ def main(argv: list[str]) -> int:
             menu(args.timeout)
             return 0
         if args.cmd == "flash":
-            flash_firmware(args.yes, args.build, args.timeout)
+            flash_firmware(args.build, args.timeout)
         elif args.cmd == "restore":
             restore_stock(args.yes, args.timeout)
         elif args.cmd == "other":

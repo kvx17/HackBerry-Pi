@@ -59,7 +59,7 @@ From the repo root:
 python3 Keyboard/firmware/flash.py
 ```
 
-Choose **1**. The menu builds `Keyboard/firmware/build/hackberry_cm5_vial.uf2` if you confirm, then waits. Hold `$` until `RPI-RP2` appears. A short tap of `$` still types `$`. On a fresh keymap the boot key is layer 2, row 5, column 4. Confirm the copy. The tool writes the UF2 and waits until the drive disappears.
+Choose **1**. If `Keyboard/firmware/build/hackberry_cm5_vial.uf2` is missing or older than the firmware sources, the menu rebuilds it before copying. A UF2 left from an earlier build is what produced the rectangular Vial grid. Press the Bootloader key you already assigned until `RPI-RP2` appears. The copy starts on its own, because that key no longer types. The tool writes the UF2 and waits until the drive disappears. Quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`. The saved map stays across a flash until that file is loaded.
 
 The same steps without the menu:
 

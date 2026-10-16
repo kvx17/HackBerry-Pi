@@ -22,7 +22,7 @@ From the repo root:
 python3 Keyboard/firmware/flash.py
 ```
 
-Option **1** builds `Keyboard/firmware/build/hackberry_cm5_vial.uf2` if you confirm, waits for `RPI-RP2`, asks before copying, and waits for the drive to disappear. Hold `$` while it waits. A tap of `$` still types `$`. On a fresh keymap, `QK_BOOT` is layer 2, row 5, column 4.
+Option **1** rebuilds `Keyboard/firmware/build/hackberry_cm5_vial.uf2` when that file is missing or older than the firmware sources, waits for `RPI-RP2`, copies as soon as the drive appears, and waits for the drive to disappear. An older UF2 is copied unchanged, and that is the rectangular grid. Press the Bootloader key you already assigned while it waits. After the flash, quit Vial and open it again, then load `Keyboard/HackberryPi_CM5_9900.vil`.
 
 ```bash
 python3 Keyboard/firmware/flash.py flash
@@ -30,7 +30,7 @@ python3 Keyboard/firmware/flash.py flash
 
 The build needs the ARM GCC and the QMK virtualenv under `Keyboard/firmware/.toolchain`. The script slot sits at flash offset `0x1EE000`, below QMK's 8 KB EEPROM area, so a UF2 that ends before that offset leaves a stored script in place.
 
-Leave the switch internal. Check keys, the trackpad, the backlight, and Vial on the CM5 before loading a script. The matrix pins come from the Q20 schematic (rows GP8 GP9 GP10 GP12 GP13 GP14 GP15, columns GP5 GP4 GP3 GP2 GP1 GP17). If the matrix is dead or scrambled, stop and recover with the stock UF2 below. If the drive never appears on this computer, copy the UF2 by hand onto the mounted `RPI-RP2` path.
+Leave the switch internal. Check keys, the trackpad, the backlight, and Vial on the CM5 before loading a script. The 9900 matrix is rows GP15 GP14 GP13 GP12 GP10 GP9 GP8 and columns GP2 through GP7, taken from Zitao's 9900 firmware. If the matrix is dead or scrambled, stop and recover with the stock UF2 below. If the drive never appears on this computer, copy the UF2 by hand onto the mounted `RPI-RP2` path.
 
 ### Flash from another computer
 
