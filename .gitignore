@@ -2,4 +2,5 @@
 /Keyboard/firmware/.toolchain/
 /Keyboard/firmware/build/
 /Keyboard/script-replay/.venv/
+/Keyboard/script-replay/scripts/.folders
 .cursor/

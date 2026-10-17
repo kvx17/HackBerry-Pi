@@ -594,10 +594,10 @@ void script_on_raw_hid(uint8_t *data, uint8_t length) {
                 n    = identity.prod_len;
             } else if (sub == 1) {
                 text = "ZitaoTech";
-                n    = 9;
+                n    = sizeof("ZitaoTech") - 1;
             } else if (sub == 2) {
                 text = "kvxducky";
-                n    = 15;
+                n    = sizeof("kvxducky") - 1;
             } else {
                 data[1] = HB_ERR_RANGE;
                 break;

@@ -1,0 +1,10 @@
+REM Open Run, start Command Prompt, and ping a public host.
+REM This types only after Play is held on the other computer.
+DEFAULTDELAY 200
+GUI r
+DELAY 500
+STRING cmd
+ENTER
+DELAY 700
+STRING ping google.com
+ENTER

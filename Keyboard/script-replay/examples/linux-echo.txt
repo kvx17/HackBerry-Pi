@@ -1,0 +1,6 @@
+REM Open a terminal with Ctrl-Alt-T, then print one line.
+DEFAULTDELAY 80
+CTRL ALT t
+DELAY 800
+STRING echo Hello from the Hackberry.
+ENTER

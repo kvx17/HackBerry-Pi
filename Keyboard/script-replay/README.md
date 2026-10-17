@@ -40,7 +40,7 @@ On the other computer, from a copy of this repo, run `python3 Keyboard/firmware/
 2. Flip the left switch to **external**.
 3. Plug the bottom USB-C into that computer.
 4. Press the Bootloader key. The script copies the UF2 when the drive appears.
-5. Flip the switch back to **internal** before Vial, the keyboard check, or `hackberry_script.py`. Those reach the RP2040 only on the CM5 side of the switch.
+5. Flip the switch back to **internal** before Vial, the keyboard check, or `kvxkeyinject`. Those reach the RP2040 only on the CM5 side of the switch.
 
 ## 2. Load the play key
 
@@ -53,6 +53,14 @@ A second press of **Script play** aborts playback. An empty slot does nothing.
 From `Keyboard/script-replay`:
 
 ```bash
+python3 kvxkeyinject
+```
+
+This tool used to be `hackberry_script.py`. The first run checks pyusb, libusb, the udev rule, and membership of the `users` group. It prints each missing piece and the command it would run, then waits for a yes. Nothing is installed before that. Yes creates `.venv` when it is missing, installs `requirements.txt` there, and copies the udev rule with sudo. The password prompt is sudo's.
+
+The same steps by hand:
+
+```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 sudo cp 99-hackberry-script.rules /etc/udev/rules.d/
@@ -60,11 +68,11 @@ sudo udevadm control --reload
 sudo udevadm trigger
 ```
 
-The rule lets a user in the `users` group claim raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, `ping` fails with `claim failure`.
+The rule lets a user in the `users` group claim raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, `ping` fails with `claim failure`. If the account was just added to `users`, the next start picks that group up. Otherwise log out and back in.
 
 ## 4. Script folder
 
-The tool reads one file path. It does not scan a directory.
+The panel lists `examples/*.txt` and `scripts/*.txt`. A command such as `send` still takes one file path. It does not scan a directory.
 
 | Path, from `Keyboard/script-replay` | Contents |
 | --- | --- |
@@ -72,38 +80,44 @@ The tool reads one file path. It does not scan a directory.
 | `examples/hello.txt` | One-line greeting. |
 | `examples/signoff.txt` | Short sign-off. |
 
-Menu option **7 list**, and the `list` command, print USB devices at `4242:0003`. They do not print filenames.
+The `list` command, and `l` in the panel, print USB devices at `4242:0003`. They do not print filenames. The panel's file list is the scripts themselves.
 
 Text files use `STRING`, `DELAY`, `ENTER`, `TAB`, `SPACE`, `BACKSPACE`, `ESC`, arrow names, `DELETE`, `CTRL-`, `ALT-`, `SHIFT-`, `GUI-` / `WIN-`, and `REPEAT` / `ENDREPEAT`. Lines starting with `#` are ignored. The host expands that text. The RP2040 only stores key down, key up, and delay events, at most 32 KB. The gap between characters defaults to 10 ms.
 
 ## 5. Send
 
-Left switch internal. From `Keyboard/script-replay`:
+Left switch internal. From `Keyboard/script-replay`, fullscreen a terminal on the 720×720 display:
 
 ```bash
-.venv/bin/python hackberry_script.py ping
-.venv/bin/python hackberry_script.py send scripts/myscript.txt
-.venv/bin/python hackberry_script.py verify scripts/myscript.txt
+python3 kvxkeyinject
 ```
 
-`send` prints progress. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is reported as that error. `verify` checks length, CRC, and a read-back.
-
-With no arguments the same commands are a menu. Options 3 and 4 ask for the file path. Type `scripts/myscript.txt` or `examples/hello.txt`.
-
-```bash
-.venv/bin/python hackberry_script.py
-```
+That opens the panel. A fullscreen terminal on that display is about 80 columns by 40 rows, which is the size the layout uses: a short script list, a preview of the selected file, and an activity log. Below about 48×18 it asks you to grow the window.
 
 | Key | Action |
 | --- | --- |
-| 1 | ping |
-| 2 | status |
-| 3 | send |
-| 4 | verify |
-| 5 | clear |
-| 6 | identity |
-| 7 | list USB devices |
+| j/k or arrows | select a script |
+| enter or s | send the selected script |
+| v | verify it against the slot |
+| c | clear the slot |
+| p | ping |
+| i | USB name |
+| l | list USB devices at 4242:0003 |
+| r | rescan `examples/` and `scripts/` |
+| ? | key help |
 | q | quit |
+
+Tap a row to select it. Tap that row again to send. Send and clear ask for `y` before they write to the keyboard. The header is the device: green when a script is loaded, red when the keyboard did not open.
+
+The same actions from the command line:
+
+```bash
+.venv/bin/python kvxkeyinject ping
+.venv/bin/python kvxkeyinject send scripts/myscript.txt
+.venv/bin/python kvxkeyinject verify scripts/myscript.txt
+```
+
+`send` prints progress. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is reported as that error. `verify` checks length, CRC, and a read-back. If the terminal cannot draw the panel, those actions fall back to a numbered menu.
 
 ## 6. Play
 
@@ -119,9 +133,9 @@ To load another file, flip the switch back to internal and run `send` again.
 ## Names
 
 ```bash
-.venv/bin/python hackberry_script.py identity --manufacturer "Cedar Labs" --product "Field Keyboard"
-.venv/bin/python hackberry_script.py identity --random
-.venv/bin/python hackberry_script.py identity --reset
+.venv/bin/python kvxkeyinject identity --manufacturer "Cedar Labs" --product "Field Keyboard"
+.venv/bin/python kvxkeyinject identity --random
+.venv/bin/python kvxkeyinject identity --reset
 ```
 
 `--random` picks a fictional brand and model, such as `Cedar Labs` / `Field Board K240`. Names are capped at 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected. VID and PID stay `4242:0003`. The new strings appear on the other computer after the switch is flipped, because that flip re-enumerates the RP2040.

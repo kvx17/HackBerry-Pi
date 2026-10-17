@@ -1,0 +1,2494 @@
+#!/usr/bin/env python3
+"""Load a typing script into the Hackberry keyboard, and rename its USB strings.
+
+With no arguments this opens a panel. The layout targets a fullscreen terminal
+on the CM5's 720×720 display, which is about 80 columns by 40 rows. The first
+run checks pyusb, libusb, the udev rule, and the users group, prints the
+install commands, and runs them only after a yes.
+
+The board stays at USB ID 4242:0003. Manufacturer and product are fictional
+labels stored in the keyboard's flash. They show up after the left switch
+re-enumerates the controller. This tool talks only to raw HID interface 1.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ctypes.util
+import curses
+import fcntl
+import grp
+import locale
+import os
+import pwd
+import random
+import shlex
+import shutil
+import struct
+import subprocess
+import sys
+import termios
+import time
+import zlib
+from pathlib import Path
+from typing import NamedTuple
+
+HERE = Path(__file__).resolve().parent
+RULE = HERE / "99-hackberry-script.rules"
+REQUIREMENTS = HERE / "requirements.txt"
+VENV_PYTHON = HERE / ".venv" / "bin" / "python"
+INSTALLED_RULE = Path("/etc/udev/rules.d") / RULE.name
+
+VID = 0x4242
+PID = 0x0003
+IFACE = 1
+REPORT = 32
+
+CMD_PING = 0xA0
+CMD_BEGIN = 0xA1
+CMD_DATA = 0xA2
+CMD_COMMIT = 0xA3
+CMD_STATUS = 0xA4
+CMD_CLEAR = 0xA5
+CMD_READ = 0xA6
+CMD_IDENTITY_SET = 0xA7
+CMD_IDENTITY_GET = 0xA8
+
+OK = 0
+ERR_STATE = 1
+ERR_CRC = 2
+ERR_RANGE = 3
+ERR_BUSY = 4
+ERR_EMPTY = 5
+
+EVT_DOWN = 0x01
+EVT_UP = 0x02
+EVT_DELAY = 0x03
+CHUNK = 24
+NAME_MAX = 28
+GAP_MS = 0
+
+MOD_LCTL = 0x01
+MOD_LSFT = 0x02
+MOD_LALT = 0x04
+MOD_LGUI = 0x08
+
+ERR_NAME = {
+    OK: "ok",
+    ERR_STATE: "wrong state",
+    ERR_CRC: "bad CRC",
+    ERR_RANGE: "out of range",
+    ERR_BUSY: "busy",
+    ERR_EMPTY: "empty",
+}
+
+# Invented labels. These are not real USB vendors.
+BRANDS = ("Cedar", "Harbor", "Northline", "Field", "Maple", "Brook", "Lantern", "Copper", "Willow", "Summit", "Birch", "Quarry", "Meadow", "Pine", "Anchor")
+HOUSES = ("Labs", "Works", "Systems", "Instruments")
+BOARDS = ("Field Board", "Desk Type", "Compact Board", "Note Board", "Travel Keys", "Studio Board", "Pocket Board")
+MODELS = ("K240", "K180", "T400", "M120", "B320", "N90")
+BLOCKED = ("logitech", "dell", "apple", "microsoft", "hp")
+
+# Fullscreen on the 720×720 panel is roughly this. Below it, ask to grow the window.
+MIN_ROWS = 18
+MIN_COLS = 48
+
+
+class ScriptError(Exception):
+    pass
+
+
+class Gap:
+    def __init__(self, title: str, detail: str, commands: list[list[str]]):
+        self.title = title
+        self.detail = detail
+        self.commands = commands
+
+
+def say(text: str) -> None:
+    print(text, flush=True)
+
+
+def crc32(data: bytes) -> int:
+    return zlib.crc32(data) & 0xFFFFFFFF
+
+
+def blocked_name(text: str) -> bool:
+    tokens = []
+    current = []
+    for ch in text.lower():
+        if ch.isalnum():
+            current.append(ch)
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return any(token in BLOCKED for token in tokens)
+
+
+def check_name(text: str) -> str:
+    text = text.strip()
+    if not text or len(text) > NAME_MAX:
+        raise ScriptError(f"name must be 1 to {NAME_MAX} ASCII characters")
+    if any(ord(ch) < 0x20 or ord(ch) > 0x7E for ch in text):
+        raise ScriptError("name must be printable ASCII")
+    if blocked_name(text):
+        raise ScriptError("that name matches a real USB vendor; use a fictional label")
+    return text
+
+
+def random_identity() -> tuple[str, str]:
+    manufacturer = check_name(f"{random.choice(BRANDS)} {random.choice(HOUSES)}")
+    product = check_name(f"{random.choice(BOARDS)} {random.choice(MODELS)}")
+    return manufacturer, product
+
+
+# US keyboard usage-page keycodes.
+UNSHIFTED = {
+    "a": 0x04, "b": 0x05, "c": 0x06, "d": 0x07, "e": 0x08, "f": 0x09, "g": 0x0A,
+    "h": 0x0B, "i": 0x0C, "j": 0x0D, "k": 0x0E, "l": 0x0F, "m": 0x10, "n": 0x11,
+    "o": 0x12, "p": 0x13, "q": 0x14, "r": 0x15, "s": 0x16, "t": 0x17, "u": 0x18,
+    "v": 0x19, "w": 0x1A, "x": 0x1B, "y": 0x1C, "z": 0x1D,
+    "1": 0x1E, "2": 0x1F, "3": 0x20, "4": 0x21, "5": 0x22, "6": 0x23, "7": 0x24,
+    "8": 0x25, "9": 0x26, "0": 0x27,
+    "\n": 0x28, "\t": 0x2B, " ": 0x2C,
+    "-": 0x2D, "=": 0x2E, "[": 0x2F, "]": 0x30, "\\": 0x31,
+    ";": 0x33, "'": 0x34, "`": 0x35, ",": 0x36, ".": 0x37, "/": 0x38,
+}
+SHIFTED = {
+    "A": "a", "B": "b", "C": "c", "D": "d", "E": "e", "F": "f", "G": "g", "H": "h",
+    "I": "i", "J": "j", "K": "k", "L": "l", "M": "m", "N": "n", "O": "o", "P": "p",
+    "Q": "q", "R": "r", "S": "s", "T": "t", "U": "u", "V": "v", "W": "w", "X": "x",
+    "Y": "y", "Z": "z",
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5", "^": "6", "&": "7", "*": "8",
+    "(": "9", ")": "0", "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
+    ":": ";", '"': "'", "~": "`", "<": ",", ">": ".", "?": "/",
+}
+NAMED = {
+    "ENTER": 0x28, "TAB": 0x2B, "SPACE": 0x2C, "BACKSPACE": 0x2A,
+    "ESC": 0x29, "ESCAPE": 0x29,
+    "DELETE": 0x4C, "PRINTSCREEN": 0x46,
+    "HOME": 0x4A, "END": 0x4D, "PAGEUP": 0x4B, "PAGEDOWN": 0x4E,
+    "UP": 0x52, "DOWN": 0x51, "LEFT": 0x50, "RIGHT": 0x4F,
+    "MENU": 0x65, "APP": 0x65,
+    "F1": 0x3A, "F2": 0x3B, "F3": 0x3C, "F4": 0x3D, "F5": 0x3E, "F6": 0x3F,
+    "F7": 0x40, "F8": 0x41, "F9": 0x42, "F10": 0x43, "F11": 0x44, "F12": 0x45,
+}
+MODS = {
+    "CTRL": MOD_LCTL, "CONTROL": MOD_LCTL,
+    "ALT": MOD_LALT,
+    "SHIFT": MOD_LSFT,
+    "GUI": MOD_LGUI, "WIN": MOD_LGUI, "WINDOWS": MOD_LGUI,
+}
+
+
+def _key(keycode: int, modifier: int = 0) -> bytes:
+    return bytes((EVT_DOWN, keycode, modifier, 0, EVT_UP, keycode, modifier, 0))
+
+
+def _delay(ms: int) -> bytes:
+    if ms <= 0:
+        return b""
+    if ms > 65535:
+        raise ScriptError("DELAY must be 1 to 65535 milliseconds")
+    return bytes((EVT_DELAY, ms & 0xFF, (ms >> 8) & 0xFF, 0))
+
+
+def _char(ch: str) -> bytes:
+    if ch in UNSHIFTED:
+        return _key(UNSHIFTED[ch])
+    if ch in SHIFTED:
+        return _key(UNSHIFTED[SHIFTED[ch]], MOD_LSFT)
+    raise ScriptError(f"unsupported character {ch!r}")
+
+
+def _chord(spec: str) -> bytes:
+    parts = spec.split("-")
+    if len(parts) < 2 or any(not part for part in parts):
+        raise ScriptError(f"bad chord {spec!r}")
+    *mods, last = parts
+    modifier = 0
+    for name in mods:
+        bit = MODS.get(name.upper())
+        if bit is None:
+            raise ScriptError(f"unknown modifier {name!r}")
+        modifier |= bit
+    last_up = last.upper()
+    if last_up in NAMED:
+        return _key(NAMED[last_up], modifier)
+    if len(last) != 1:
+        raise ScriptError(f"bad chord key {last!r}")
+    if last in UNSHIFTED:
+        return _key(UNSHIFTED[last], modifier)
+    if last in SHIFTED:
+        return _key(UNSHIFTED[SHIFTED[last]], modifier | MOD_LSFT)
+    raise ScriptError(f"bad chord key {last!r}")
+
+
+def _string_body(text: str) -> str:
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        return text[1:-1]
+    return text
+
+
+def _millis(line: str) -> int:
+    parts = line.split()
+    if len(parts) != 2:
+        raise ScriptError(f"{parts[0]} needs a millisecond count")
+    ms = int(parts[1])
+    if ms < 1 or ms > 65535:
+        raise ScriptError("delay must be 1 to 65535 milliseconds")
+    return ms
+
+
+def _token_key(token: str) -> tuple[int, int]:
+    """Keycode and extra shift bit for one key token."""
+    named = NAMED.get(token.upper())
+    if named is not None:
+        return named, 0
+    if len(token) != 1:
+        raise ScriptError(f"unknown key {token!r}")
+    if token in UNSHIFTED:
+        return UNSHIFTED[token], 0
+    if token in SHIFTED:
+        return UNSHIFTED[SHIFTED[token]], MOD_LSFT
+    raise ScriptError(f"unknown key {token!r}")
+
+
+def _modifier_line(line: str) -> bytes | None:
+    parts = line.split()
+    if not parts or parts[0].upper() not in MODS:
+        return None
+    modifier = 0
+    key_token = None
+    for part in parts:
+        bit = MODS.get(part.upper())
+        if bit is not None and key_token is None:
+            modifier |= bit
+            continue
+        if key_token is not None:
+            raise ScriptError(f"unknown key {part!r}")
+        key_token = part
+    if key_token is None:
+        return _key(0, modifier)
+    keycode, extra = _token_key(key_token)
+    return _key(keycode, modifier | extra)
+
+
+def translate(text: str, gap_ms: int = GAP_MS) -> bytes:
+    """Expand the text subset into 4-byte events. REPEAT is expanded here."""
+    ops = []
+    stack = []
+    for number, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        upper = line.upper()
+        if not line or line.startswith("#") or upper == "REM" or upper.startswith("REM "):
+            continue
+        try:
+            if upper.startswith("REPEAT"):
+                count = int(line.split()[1])
+                if count < 1:
+                    raise ScriptError("REPEAT count must be at least 1")
+                stack.append((count, len(ops)))
+            elif upper == "ENDREPEAT":
+                if not stack:
+                    raise ScriptError("ENDREPEAT without REPEAT")
+                count, start = stack.pop()
+                block = ops[start:]
+                for _ in range(count - 1):
+                    ops.extend(block)
+            else:
+                ops.append(line)
+        except ScriptError as exc:
+            raise ScriptError(f"line {number}: {exc}") from exc
+        except (IndexError, ValueError) as exc:
+            raise ScriptError(f"line {number}: {exc}") from exc
+    if stack:
+        raise ScriptError("REPEAT without ENDREPEAT")
+
+    out = bytearray()
+    default_delay = 0
+    for line in ops:
+        upper = line.upper()
+        if upper.startswith("DEFAULT_DELAY") or upper.startswith("DEFAULTDELAY"):
+            default_delay = _millis(line)
+            continue
+        if upper.startswith("STRINGLN"):
+            body = _string_body(line[8:].strip())
+            for index, ch in enumerate(body):
+                out += _char(ch)
+                if gap_ms and index + 1 < len(body):
+                    out += _delay(gap_ms)
+            out += _key(NAMED["ENTER"])
+        elif upper.startswith("STRING"):
+            body = _string_body(line[6:].strip())
+            for index, ch in enumerate(body):
+                out += _char(ch)
+                if gap_ms and index + 1 < len(body):
+                    out += _delay(gap_ms)
+        elif upper.startswith("DELAY"):
+            out += _delay(_millis(line))
+        elif upper in NAMED:
+            out += _key(NAMED[upper])
+        elif (pressed := _modifier_line(line)) is not None:
+            out += pressed
+        elif "-" in line:
+            out += _chord(line)
+        else:
+            raise ScriptError(f"unknown command {line!r}")
+        if default_delay and not upper.startswith("DELAY"):
+            out += _delay(default_delay)
+    if len(out) > 32 * 1024:
+        raise ScriptError("script is larger than 32 KB")
+    if len(out) % 4:
+        raise ScriptError("encoder produced a partial event")
+    return bytes(out)
+
+
+class Board:
+    def __init__(self, device, out_ep, in_ep):
+        self.device = device
+        self.out_ep = out_ep
+        self.in_ep = in_ep
+
+    def close(self) -> None:
+        import usb.util
+
+        usb.util.release_interface(self.device, IFACE)
+        try:
+            self.device.attach_kernel_driver(IFACE)
+        except Exception:
+            pass
+
+    def xfer(self, payload: bytes, timeout: int = 1000) -> bytes:
+        report = payload + bytes(REPORT - len(payload))
+        if len(report) != REPORT:
+            raise ScriptError("report is not 32 bytes")
+        try:
+            wrote = self.device.write(self.out_ep, report, timeout)
+        except Exception as exc:
+            raise ScriptError(f"short write: {exc}") from exc
+        if wrote != REPORT:
+            raise ScriptError(f"short write: sent {wrote} of {REPORT}")
+        try:
+            data = bytes(self.device.read(self.in_ep, REPORT, timeout))
+        except Exception as exc:
+            raise ScriptError(f"ACK timeout: {exc}") from exc
+        if len(data) != REPORT:
+            raise ScriptError(f"short read: got {len(data)} of {REPORT}")
+        return data
+
+    def status(self, cmd: int = CMD_STATUS) -> dict:
+        data = self.xfer(bytes((cmd,)))
+        if data[0] == 0xFF:
+            raise ScriptError("keyboard replied unhandled; this firmware does not have the script protocol")
+        if data[0] != cmd:
+            raise ScriptError(f"unexpected reply command 0x{data[0]:02X}")
+        return {
+            "code": data[1],
+            "proto": data[2],
+            "state": data[3],
+            "max_len": data[4] | (data[5] << 8),
+            "length": data[6] | (data[7] << 8),
+            "crc": int.from_bytes(data[8:12], "little"),
+            "valid": data[12] == 1,
+            "busy": data[13] == 1,
+            "identity": data[14] == 1,
+            "raw": data,
+        }
+
+    def wait_idle(self, timeout: float = 15.0) -> dict:
+        deadline = time.monotonic() + timeout
+        last = None
+        while time.monotonic() < deadline:
+            last = self.status()
+            if last["code"] not in (OK, ERR_BUSY) or not last["busy"]:
+                return last
+            time.sleep(0.02)
+        raise ScriptError("ACK timeout: flash job did not finish")
+
+
+def open_board():
+    try:
+        import usb.core
+        import usb.util
+    except ImportError as exc:
+        raise ScriptError("pyusb is not installed in this Python") from exc
+
+    devices = list(usb.core.find(find_all=True, idVendor=VID, idProduct=PID))
+    if not devices:
+        raise ScriptError("device missing: no USB device at 4242:0003 (switch the keyboard internal)")
+    device = devices[0]
+    try:
+        if device.is_kernel_driver_active(IFACE):
+            device.detach_kernel_driver(IFACE)
+        usb.util.claim_interface(device, IFACE)
+    except Exception as exc:
+        raise ScriptError(f"claim failure on interface {IFACE}: {exc}") from exc
+
+    intf = usb.util.find_descriptor(device.get_active_configuration(), bInterfaceNumber=IFACE)
+    if intf is None:
+        raise ScriptError("claim failure: interface 1 is missing")
+    out_ep = None
+    in_ep = None
+    for endpoint in intf:
+        if usb.util.endpoint_direction(endpoint.bEndpointAddress) == usb.util.ENDPOINT_OUT:
+            out_ep = endpoint.bEndpointAddress
+        else:
+            in_ep = endpoint.bEndpointAddress
+    if out_ep is None or in_ep is None:
+        raise ScriptError("claim failure: interface 1 has no IN/OUT pair")
+    return Board(device, out_ep, in_ep)
+
+
+def require_ok(data: bytes, what: str) -> None:
+    if data[0] == 0xFF:
+        raise ScriptError("keyboard replied unhandled; this firmware does not have the script protocol")
+    if data[1] != OK:
+        raise ScriptError(f"{what}: {ERR_NAME.get(data[1], data[1])}")
+
+
+def cmd_send(board: Board, payload: bytes, emit=say) -> None:
+    info = board.status()
+    limit = info["max_len"] or (32 * 1024)
+    if info["busy"]:
+        raise ScriptError("keyboard is busy writing flash; wait, then send again")
+    if len(payload) > limit:
+        raise ScriptError(
+            f"script is {len(payload)} bytes and the RP2040 slot holds {limit}. Nothing was written."
+        )
+    emit(f"fits {len(payload)}/{limit} bytes")
+    digest = crc32(payload)
+    begin = bytes((CMD_BEGIN,)) + len(payload).to_bytes(4, "little") + digest.to_bytes(4, "little")
+    require_ok(board.xfer(begin), "begin")
+    offset = 0
+    total = len(payload)
+    while offset < total:
+        n = min(CHUNK, total - offset)
+        packet = bytes((CMD_DATA, offset & 0xFF, (offset >> 8) & 0xFF, n)) + payload[offset : offset + n]
+        reply = board.xfer(packet)
+        require_ok(reply, "data")
+        offset += n
+        emit(f"send {offset}/{total}")
+    reply = board.xfer(bytes((CMD_COMMIT,)))
+    if reply[1] == ERR_CRC:
+        raise ScriptError("commit: bad CRC")
+    if reply[1] not in (OK, ERR_BUSY):
+        raise ScriptError(f"commit: {ERR_NAME.get(reply[1], reply[1])}")
+    done = board.wait_idle()
+    if not done["valid"] or done["crc"] != digest or done["length"] != len(payload):
+        raise ScriptError("commit finished but the slot is not valid")
+    emit(f"stored {done['length']} bytes crc {done['crc']:08x}")
+
+
+def read_back(board: Board, length: int) -> bytes:
+    out = bytearray()
+    offset = 0
+    while offset < length:
+        n = min(CHUNK, length - offset)
+        reply = board.xfer(bytes((CMD_READ, offset & 0xFF, (offset >> 8) & 0xFF, n)))
+        require_ok(reply, "read")
+        out += reply[5 : 5 + n]
+        offset += n
+    return bytes(out)
+
+
+def cmd_identity_set(board: Board, sub: int, text: bytes = b"") -> None:
+    packet = bytes((CMD_IDENTITY_SET, sub, len(text))) + text
+    reply = board.xfer(packet)
+    if reply[1] == ERR_BUSY:
+        done = board.wait_idle()
+        if done["code"] != OK:
+            raise ScriptError(f"identity: {ERR_NAME.get(done['code'], done['code'])}")
+        return
+    require_ok(reply, "identity")
+
+
+def cmd_identity_get(board: Board, sub: int) -> str:
+    reply = board.xfer(bytes((CMD_IDENTITY_GET, sub)))
+    require_ok(reply, "identity get")
+    n = min(reply[2], NAME_MAX, max(0, len(reply) - 3))
+    raw = reply[3 : 3 + n].split(b"\x00", 1)[0]
+    return raw.decode("ascii", "replace")
+
+
+def status_text(info: dict) -> str:
+    return (
+        f"proto {info['proto']} state {info['state']} "
+        f"valid {int(info['valid'])} busy {int(info['busy'])} "
+        f"length {info['length']} crc {info['crc']:08x} "
+        f"identity {int(info['identity'])}"
+    )
+
+
+def status_brief(info: dict) -> str:
+    if info["busy"]:
+        slot = "busy"
+    elif info["valid"]:
+        slot = f"{info['length']} bytes loaded"
+    else:
+        slot = "slot empty"
+    return f"4242:0003  {slot}"
+
+
+def do_identity(board: Board, args, emit=say) -> None:
+    if args.reset:
+        cmd_identity_set(board, 4)
+    elif args.random:
+        manufacturer, product = random_identity()
+        emit(f"manufacturer {manufacturer}")
+        emit(f"product {product}")
+        cmd_identity_set(board, 1, manufacturer.encode())
+        cmd_identity_set(board, 2, product.encode())
+    elif args.manufacturer or args.product:
+        if args.manufacturer:
+            cmd_identity_set(board, 1, check_name(args.manufacturer).encode())
+        if args.product:
+            cmd_identity_set(board, 2, check_name(args.product).encode())
+    emit(f"manufacturer {cmd_identity_get(board, 1)}")
+    emit(f"product {cmd_identity_get(board, 2)}")
+    emit("The new strings appear on the next enumeration, after the left switch is flipped.")
+
+
+def read_script(path: str) -> str:
+    file = Path(path)
+    if not file.is_file():
+        raise ScriptError(f"script not found: {path}")
+    try:
+        if file.stat().st_size > 1024 * 1024:
+            raise ScriptError("script file is larger than 1 MB")
+        return file.read_text(encoding="utf-8")
+    except ScriptError:
+        raise
+    except UnicodeError as exc:
+        raise ScriptError(f"script is not UTF-8: {path}") from exc
+    except OSError as exc:
+        raise ScriptError(f"cannot read {path}: {exc}") from exc
+
+
+def label(path: Path) -> str:
+    try:
+        return str(path.relative_to(HERE))
+    except ValueError:
+        return path.name
+
+
+class Row(NamedTuple):
+    path: Path
+    kind: str
+    depth: int
+
+
+TREE_CLOSED = ">"
+TREE_OPEN = "↓"
+TREE_LINE = "│"
+
+
+def tree_label(row: Row, expanded: set[Path]) -> str:
+    """Closed folders start with >. Open ones start with a down arrow, and a line sits before each child."""
+    gutter = f"{TREE_LINE} " * row.depth
+    if row.kind == "dir":
+        mark = TREE_OPEN if row.path in expanded else TREE_CLOSED
+        return f"{gutter}{mark}{row.path.name}"
+    return f"{gutter}{row.path.name}"
+
+
+def _dir_kids(folder: Path) -> tuple[list[Path], list[Path]]:
+    try:
+        kids = list(folder.iterdir())
+    except OSError:
+        return [], []
+    dirs: list[Path] = []
+    files: list[Path] = []
+    for kid in kids:
+        if kid.name.startswith(".") or kid.name == "__pycache__":
+            continue
+        if kid.is_dir():
+            dirs.append(kid)
+        elif kid.is_file() and kid.suffix == ".txt":
+            files.append(kid)
+    dirs.sort(key=lambda path: path.name.lower())
+    files.sort(key=lambda path: path.name.lower())
+    return dirs, files
+
+
+def visible_tree(
+    roots: list[Path],
+    expanded: set[Path],
+    include_root: bool,
+    base_depth: int = 0,
+) -> list[Row]:
+    """Flatten folders the user has opened. Closed folders hide their children."""
+    rows: list[Row] = []
+    seen: set[Path] = set()
+
+    def add_children(folder: Path, depth: int) -> None:
+        try:
+            key = folder.resolve()
+        except OSError:
+            key = folder
+        if key in seen:
+            return
+        seen.add(key)
+        dirs, files = _dir_kids(folder)
+        for child in dirs:
+            opened = child in expanded
+            rows.append(Row(child, "dir", depth))
+            if opened:
+                add_children(child, depth + 1)
+        for child in files:
+            rows.append(Row(child, "file", depth))
+        seen.discard(key)
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        if include_root:
+            rows.append(Row(root, "dir", base_depth))
+            if root in expanded:
+                add_children(root, base_depth + 1)
+        else:
+            add_children(root, base_depth)
+    return rows
+
+
+SAVED_FOLDERS = HERE / "scripts" / ".folders"
+
+
+def load_saved_folders(path: Path | None = None) -> list[Path]:
+    """Folders the user added with f. One absolute path per line."""
+    file = path or SAVED_FOLDERS
+    if not file.is_file():
+        return []
+    found: list[Path] = []
+    seen: set[Path] = set()
+    try:
+        lines = file.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return []
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        folder = Path(line).expanduser()
+        try:
+            folder = folder.resolve()
+        except OSError:
+            pass
+        if folder in seen:
+            continue
+        seen.add(folder)
+        found.append(folder)
+    return found
+
+
+def save_saved_folders(folders: list[Path], path: Path | None = None) -> None:
+    file = path or SAVED_FOLDERS
+    file.parent.mkdir(parents=True, exist_ok=True)
+    body = "".join(f"{folder}\n" for folder in folders)
+    file.write_text(body, encoding="utf-8")
+
+
+def saved_folder_rows(folders: list[Path], expanded: set[Path]) -> list[Row]:
+    """Saved folders sit inside scripts, under a vertical line."""
+    scripts = (HERE / "scripts").resolve()
+    examples = (HERE / "examples").resolve()
+    rows: list[Row] = []
+    for folder in folders:
+        try:
+            key = folder.resolve()
+        except OSError:
+            key = folder
+        if key in (scripts, examples) or scripts in key.parents or examples in key.parents:
+            continue
+        rows.append(Row(key, "dir", 1))
+        if key in expanded and key.is_dir():
+            rows.extend(visible_tree([key], expanded, include_root=False, base_depth=2))
+    return rows
+
+
+def discover(folder: Path | None = None) -> list[Path]:
+    if folder is not None:
+        if not folder.is_dir():
+            return []
+        return sorted(path for path in folder.glob("*.txt") if path.is_file())
+    found = []
+    for name in ("examples", "scripts"):
+        directory = HERE / name
+        if not directory.is_dir():
+            continue
+        found.extend(sorted(path for path in directory.glob("*.txt") if path.is_file()))
+    return found
+
+
+def event_note(path: Path) -> str:
+    try:
+        payload = translate(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ScriptError):
+        return "error"
+    if not payload:
+        return "empty"
+    return f"{len(payload) // 4} events"
+
+
+def open_example(name: str) -> str:
+    path = HERE / "examples" / name
+    return path.read_text(encoding="utf-8")
+
+
+def run_command(args, emit=say) -> None:
+    if args.cmd == "list":
+        try:
+            import usb.core
+        except ImportError as exc:
+            raise ScriptError("pyusb is not installed in this Python") from exc
+        found = list(usb.core.find(find_all=True, idVendor=VID, idProduct=PID))
+        if not found:
+            raise ScriptError("device missing: no USB device at 4242:0003")
+        for device in found:
+            emit(f"4242:0003 bus {device.bus} address {device.address}")
+        return
+
+    board = open_board()
+    try:
+        if args.cmd == "ping":
+            emit(status_text(board.status(CMD_PING)))
+        elif args.cmd == "status":
+            emit(status_text(board.status()))
+        elif args.cmd == "info":
+            product = ""
+            manufacturer = ""
+            try:
+                manufacturer = board.device.manufacturer or ""
+                product = board.device.product or ""
+            except Exception:
+                pass
+            emit(f"usb manufacturer {manufacturer}")
+            emit(f"usb product {product}")
+            emit("Stored names apply on the next enumeration.")
+            emit(status_text(board.status()))
+            emit(f"stored manufacturer {cmd_identity_get(board, 1)}")
+            emit(f"stored product {cmd_identity_get(board, 2)}")
+        elif args.cmd == "send":
+            payload = translate(read_script(args.file))
+            if not payload:
+                raise ScriptError("script produced no events")
+            cmd_send(board, payload, emit)
+        elif args.cmd == "verify":
+            payload = translate(read_script(args.file))
+            info = board.status()
+            if not info["valid"]:
+                raise ScriptError("verify: slot is empty")
+            if info["length"] != len(payload) or info["crc"] != crc32(payload):
+                raise ScriptError("verify: length or CRC does not match")
+            if read_back(board, len(payload)) != payload:
+                raise ScriptError("verify: read-back does not match")
+            emit(f"verified {len(payload)} bytes")
+        elif args.cmd == "clear":
+            reply = board.xfer(bytes((CMD_CLEAR,)))
+            if reply[1] not in (OK, ERR_BUSY):
+                raise ScriptError(f"clear: {ERR_NAME.get(reply[1], reply[1])}")
+            done = board.wait_idle()
+            if done["valid"]:
+                raise ScriptError("clear finished but the slot is still valid")
+            emit("cleared")
+        elif args.cmd == "identity":
+            do_identity(board, args, emit)
+        else:
+            raise ScriptError("unknown command")
+    finally:
+        board.close()
+
+
+def namespace(cmd: str, **kwargs) -> argparse.Namespace:
+    return argparse.Namespace(
+        cmd=cmd,
+        selftest=False,
+        file=kwargs.get("file"),
+        manufacturer=kwargs.get("manufacturer"),
+        product=kwargs.get("product"),
+        random=bool(kwargs.get("random", False)),
+        reset=bool(kwargs.get("reset", False)),
+    )
+
+
+def read_names() -> tuple[str, str]:
+    board = open_board()
+    try:
+        return cmd_identity_get(board, 1), cmd_identity_get(board, 2)
+    finally:
+        board.close()
+
+
+def read_status() -> dict:
+    board = open_board()
+    try:
+        return board.status(CMD_PING)
+    finally:
+        board.close()
+
+
+def wrap_plain(text: str, width: int) -> list[str]:
+    if width < 8:
+        width = 8
+    words = text.split()
+    if not words:
+        return [""]
+    lines: list[str] = []
+    cur = ""
+    for word in words:
+        while len(word) > width:
+            if cur:
+                lines.append(cur)
+                cur = ""
+            lines.append(word[:width])
+            word = word[width:]
+        if not cur:
+            cur = word
+        elif len(cur) + 1 + len(word) <= width:
+            cur += " " + word
+        else:
+            lines.append(cur)
+            cur = word
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def top_line_limit(line_count: int) -> int:
+    """The last line may sit on the first row, so scrolling can reach it."""
+    return max(0, line_count - 1)
+
+
+FOLDER_HINT = "/home/user/myscripts"
+
+
+def layout(rows: int) -> dict:
+    """Stack the panel for a square screen.
+
+    A fullscreen terminal on the 720×720 display is about 40 rows. The file
+    list stays short, the open script gets the large area, and the activity
+    log is a strip under it.
+    """
+    top = 2
+    bottom = rows - 2
+    body = bottom - top + 1
+    if body >= 22:
+        script, log = 8, 6
+    elif body >= 16:
+        script, log = 6, 5
+    else:
+        script, log = max(5, body - 5), 5
+        script = min(script, body - log)
+    preview = body - script - log
+    if preview < 4:
+        preview = 0
+        script = body - log
+    y = top
+    boxes = {"script": (y, script), "preview": None, "log": (0, log), "footer": rows - 1}
+    y += script
+    if preview:
+        boxes["preview"] = (y, preview)
+        y += preview
+    boxes["log"] = (y, log)
+    return boxes
+
+
+def guide_text() -> list[tuple[str, bool]]:
+    """Help pages. The flag marks a heading."""
+    paragraphs = [
+        (True, "How to use"),
+        (False, "j and k, or the arrow keys, move through the list. u scrolls the open script up and i scrolls it down, in the preview and on the full screen. Enter sends the highlighted script. The left switch must be internal while you send."),
+        (False, "Enter on a folder opens or closes it. A closed folder starts with >. An open folder starts with a down arrow, and a vertical line sits in front of each file inside it. Right opens a folder. Left closes it, or jumps back to the parent."),
+        (False, "f adds a folder to scripts in this list. Paste a path from this computer. The example is /home/user/myscripts. Enter keeps that path, or replace it with yours. The folder stays after you quit. Enter opens it."),
+        (False, "r reads the highlighted script on the full screen. e opens it in nano. n creates a new .txt file in that same folder and opens nano."),
+        (False, "v checks the keyboard copy against the file. c clears the slot. p pings the keyboard. g changes the USB name. h opens this guide. q quits."),
+        (True, "Play on the other computer"),
+        (False, "Sending does not type anything. Flip the left switch to external, plug the bottom USB-C into the other computer, then hold the Vial key Play for about half a second. A tap does nothing. Press Play again to stop."),
+        (False, "In Vial that key is labeled Play. Its full name is Script play. script_play.vil puts it on layer 2, R. You can assign Play to any key yourself. Hold the layer key as well when Play sits on layer 2."),
+        (False, "Before a send, the tool asks the RP2040 how large the slot is. A script that does not fit is not written."),
+        (True, "Script language"),
+        (True, "Timing"),
+        (True, "DELAY 1000"),
+        (False, "Pauses for that many milliseconds, from 1 to 65535. DELAY 1000 waits one second. Use it while a window is opening."),
+        (True, "DEFAULTDELAY 100"),
+        (False, "After this line, every later command waits that many milliseconds when it finishes. You do not have to write DELAY on every line. DEFAULT_DELAY is the same command. A DELAY line is not given an extra pause."),
+        (True, "Text"),
+        (True, "STRING cmd.exe"),
+        (False, "Types that text at full speed, exactly as written. Quotes around the text are optional when they match."),
+        (True, "ENTER"),
+        (False, "Presses Enter."),
+        (True, "Modifiers"),
+        (True, "GUI r"),
+        (False, "Holds the Windows or Command key and taps r. WINDOWS r and WIN r are the same key. GUI alone taps the Windows key by itself. GUI-r still works."),
+        (True, "CTRL c"),
+        (False, "Holds Control and taps c. CONTROL c is the same. CTRL ESC opens the Start menu. CTRL-c still works."),
+        (True, "ALT F4"),
+        (False, "Holds Alt and taps F4, which closes the active window on Windows. F1 through F12 can be used alone or with a modifier."),
+        (True, "SHIFT UP"),
+        (False, "Holds Shift and taps Up, which selects text upward. The key name can be lowercase."),
+        (True, "System keys"),
+        (False, "Put one of these alone on a line to press it once: TAB, SPACE, ESCAPE or ESC, BACKSPACE, DELETE, MENU or APP, PRINTSCREEN. MENU and APP open the context menu."),
+        (True, "Arrows"),
+        (False, "UP and DOWN, LEFT and RIGHT, PAGEUP and PAGEDOWN, HOME and END. Each name presses that key once."),
+        (True, "REPEAT 3"),
+        (True, "STRING Again."),
+        (True, "ENDREPEAT"),
+        (False, "Runs that block 3 times. Every REPEAT needs an ENDREPEAT."),
+        (True, "REM comment"),
+        (False, "A line that starts with REM or # is ignored. Blank lines are ignored too."),
+        (True, "Example"),
+        (False, "This opens Run on Windows, starts Command Prompt, and pings a host. It types only after you hold Play on the other computer."),
+        (True, "REM Open Run, then Command Prompt, then ping"),
+        (True, "DEFAULTDELAY 200"),
+        (True, "GUI r"),
+        (True, "DELAY 500"),
+        (True, "STRING cmd"),
+        (True, "ENTER"),
+        (True, "DELAY 700"),
+        (True, "STRING ping google.com"),
+        (True, "ENTER"),
+        (True, "Names"),
+        (False, "Manufacturer and product are fictional labels, up to 28 characters. Logitech, Dell, Apple, Microsoft, and HP are rejected. VID and PID stay 4242:0003. The new strings show up after the left switch is flipped."),
+        (False, "b or q closes this guide."),
+    ]
+    return [(text, heading) for heading, text in paragraphs]
+
+
+def in_venv() -> bool:
+    return sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+
+
+def user_name() -> str:
+    return pwd.getpwuid(os.getuid()).pw_name
+
+
+def as_root(cmd: list[str]) -> list[str]:
+    if os.geteuid() == 0:
+        return cmd
+    if not shutil.which("sudo"):
+        return cmd
+    if cmd and cmd[0] == "apt-get":
+        return ["sudo", "DEBIAN_FRONTEND=noninteractive", *cmd]
+    return ["sudo", *cmd]
+
+
+def command_env(cmd: list[str]) -> dict[str, str]:
+    env = os.environ.copy()
+    if "apt-get" in cmd:
+        env["DEBIAN_FRONTEND"] = "noninteractive"
+    return env
+
+
+def has_pyusb(python: str | None = None) -> bool:
+    if python is None:
+        try:
+            import usb.core  # noqa: F401
+        except ImportError:
+            return False
+        return True
+    try:
+        result = subprocess.run(
+            [python, "-c", "import usb.core"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def ensurepip_ok() -> bool:
+    try:
+        import ensurepip  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def libusb_ok() -> bool:
+    if ctypes.util.find_library("usb-1.0"):
+        return True
+    try:
+        import usb.backend.libusb1 as backend
+    except ImportError:
+        return False
+    return backend.get_backend() is not None
+
+
+def libusb_install() -> list[str] | None:
+    if shutil.which("apt-get"):
+        return as_root(["apt-get", "install", "-y", "libusb-1.0-0"])
+    if shutil.which("dnf"):
+        return as_root(["dnf", "install", "-y", "libusb1"])
+    if shutil.which("pacman"):
+        return as_root(["pacman", "-S", "--noconfirm", "libusb"])
+    if shutil.which("zypper"):
+        return as_root(["zypper", "--non-interactive", "install", "libusb-1_0-0"])
+    return None
+
+
+def rule_group() -> str:
+    try:
+        text = RULE.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return "users"
+    for token in text.replace(",", " ").split():
+        if "GROUP=" not in token:
+            continue
+        value = token.split("GROUP=", 1)[1].strip().strip('"').strip("'")
+        if value:
+            return value
+    return "users"
+
+
+def rule_matches() -> bool:
+    try:
+        current = INSTALLED_RULE.read_text(encoding="utf-8", errors="replace").strip()
+        wanted = RULE.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return False
+    return bool(current) and current == wanted
+
+
+def group_record(name: str):
+    try:
+        return grp.getgrnam(name)
+    except KeyError:
+        return None
+
+
+def process_in_group(name: str) -> bool:
+    if os.geteuid() == 0:
+        return True
+    group = group_record(name)
+    if group is None:
+        return False
+    return group.gr_gid == os.getgid() or group.gr_gid in os.getgroups()
+
+
+def user_in_group_db(name: str) -> bool:
+    group = group_record(name)
+    if group is None:
+        return False
+    user = user_name()
+    if user in group.gr_mem:
+        return True
+    try:
+        return pwd.getpwnam(user).pw_gid == group.gr_gid
+    except KeyError:
+        return False
+
+
+def pip_command(python: str) -> list[str]:
+    if REQUIREMENTS.is_file():
+        return [python, "-m", "pip", "install", "-r", str(REQUIREMENTS)]
+    return [python, "-m", "pip", "install", "pyusb"]
+
+
+def collect_gaps() -> list[Gap]:
+    gaps = []
+    if not has_pyusb():
+        commands: list[list[str]] = []
+        if in_venv():
+            detail = "pyusb is the USB library. It is not installed in this virtualenv."
+            commands.append(pip_command(sys.executable))
+        else:
+            detail = "pyusb is the USB library. It is installed into .venv next to this file."
+            if not VENV_PYTHON.is_file():
+                if not ensurepip_ok() and shutil.which("apt-get"):
+                    commands.append(as_root(["apt-get", "install", "-y", "python3-venv"]))
+                commands.append([sys.executable, "-m", "venv", str(HERE / ".venv")])
+            commands.append(pip_command(str(VENV_PYTHON)))
+        gaps.append(Gap("pyusb", detail, commands))
+    if not libusb_ok():
+        command = libusb_install()
+        if command is None:
+            gaps.append(Gap(
+                "libusb",
+                "pyusb opens USB devices through libusb 1.0. Install that shared library with your package manager.",
+                [],
+            ))
+        else:
+            gaps.append(Gap(
+                "libusb",
+                "pyusb opens USB devices through libusb 1.0.",
+                [command],
+            ))
+    if not rule_matches():
+        if not RULE.is_file():
+            gaps.append(Gap(
+                "udev rule",
+                "99-hackberry-script.rules is missing next to kvxkeyinject, so it cannot be copied.",
+                [],
+            ))
+        else:
+            gaps.append(Gap(
+                "udev rule",
+                "Lets your user claim raw HID interface 1. The boot keyboard stays with the kernel.",
+                [
+                    as_root(["cp", str(RULE), str(INSTALLED_RULE)]),
+                    as_root(["udevadm", "control", "--reload"]),
+                    as_root(["udevadm", "trigger"]),
+                ],
+            ))
+    group = rule_group()
+    if os.geteuid() != 0 and not process_in_group(group) and not user_in_group_db(group):
+        commands = []
+        if group_record(group) is None:
+            commands.append(as_root(["groupadd", group]))
+        commands.append(as_root(["usermod", "-aG", group, user_name()]))
+        gaps.append(Gap(
+            f"{group} group",
+            f"The udev rule grants the {group} group. This account is not a member yet.",
+            commands,
+        ))
+    return gaps
+
+
+def ask(prompt: str, default_yes: bool = False) -> bool:
+    suffix = " [Y/n] " if default_yes else " [y/N] "
+    try:
+        answer = input(prompt + suffix).strip().lower()
+    except EOFError:
+        print()
+        return False
+    if not answer:
+        return default_yes
+    return answer in ("y", "yes")
+
+
+def print_gaps(gaps: list[Gap]) -> None:
+    print("kvxkeyinject")
+    print()
+    print("These are missing. Nothing has been installed yet.")
+    print()
+    for index, gap in enumerate(gaps, 1):
+        print(f"{index}. {gap.title}")
+        for line in wrap_plain(gap.detail, 72):
+            print(f"   {line}")
+        if not gap.commands:
+            print("   Install this by hand, then run kvxkeyinject again.")
+        else:
+            print("   will run:")
+            for cmd in gap.commands:
+                print(f"     {shlex.join(cmd)}")
+        print()
+
+
+def run_cmd(cmd: list[str]) -> bool:
+    print()
+    print("  " + shlex.join(cmd))
+    try:
+        result = subprocess.run(cmd, env=command_env(cmd))
+    except OSError as exc:
+        print(f"  could not run that: {exc}")
+        return False
+    if result.returncode != 0:
+        print(f"  exited {result.returncode}")
+        return False
+    print("  done")
+    return True
+
+
+def interpreter() -> str:
+    if in_venv():
+        return sys.executable
+    if VENV_PYTHON.is_file():
+        return str(VENV_PYTHON)
+    return sys.executable
+
+
+def switch_to_venv_if_ready() -> None:
+    if in_venv() or os.environ.get("KVXKEYINJECT_REEXEC") == "1":
+        return
+    if not VENV_PYTHON.is_file() or not has_pyusb(str(VENV_PYTHON)):
+        return
+    script = str(Path(__file__).resolve())
+    os.environ["KVXKEYINJECT_REEXEC"] = "1"
+    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), script, *sys.argv[1:]])
+
+
+def relaunch(python: str) -> None:
+    script = str(Path(__file__).resolve())
+    argv = [python, script, *sys.argv[1:]]
+    group = rule_group()
+    use_sg = (
+        os.environ.get("KVXKEYINJECT_SG") != "1"
+        and shutil.which("sg")
+        and not process_in_group(group)
+        and user_in_group_db(group)
+    )
+    os.environ["KVXKEYINJECT_REEXEC"] = "1"
+    try:
+        if use_sg:
+            print(f"Starting again with the {group} group.")
+            os.environ["KVXKEYINJECT_SG"] = "1"
+            os.execvp("sg", ["sg", group, "-c", shlex.join(argv)])
+        print("Starting again.")
+        os.execv(python, argv)
+    except OSError as exc:
+        print(f"could not restart: {exc}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+def warn_if_group_is_stale() -> None:
+    group = rule_group()
+    if os.geteuid() == 0 or process_in_group(group) or not user_in_group_db(group):
+        return
+    if os.environ.get("KVXKEYINJECT_SG") != "1" and shutil.which("sg"):
+        print(f"Starting with the {group} group.")
+        script = str(Path(__file__).resolve())
+        argv = [sys.executable, script, *sys.argv[1:]]
+        os.environ["KVXKEYINJECT_SG"] = "1"
+        try:
+            os.execvp("sg", ["sg", group, "-c", shlex.join(argv)])
+        except OSError as exc:
+            print(f"could not start with the {group} group: {exc}")
+    print(f"You are in the {group} group, but this login has not picked it up.")
+    print("Log out and back in. Until then, opening the keyboard can fail.")
+
+
+def prepare_dependencies() -> int:
+    try:
+        switch_to_venv_if_ready()
+    except OSError as exc:
+        print(f"could not switch to the virtualenv: {exc}", file=sys.stderr)
+    gaps = collect_gaps()
+    if not gaps:
+        warn_if_group_is_stale()
+        return 0
+    print_gaps(gaps)
+    runnable = [gap for gap in gaps if gap.commands]
+    if not runnable:
+        print("Install the items above, then run kvxkeyinject again.")
+        return 1
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("Run kvxkeyinject in a terminal to install these, or run the commands above.")
+        return 1
+    needs_root = any(cmd and cmd[0] == "sudo" for gap in runnable for cmd in gap.commands)
+    if needs_root:
+        print("Installing uses sudo for system packages and may ask for your password.")
+    if not ask("Install these now?", False):
+        print("Nothing was installed. The commands above are the manual steps.")
+        return 1
+    for gap in runnable:
+        for cmd in gap.commands:
+            if not run_cmd(cmd):
+                print()
+                print("Stopped. What already succeeded is installed.")
+                print("Run kvxkeyinject again to continue.")
+                return 1
+    print()
+    print("Installed.")
+    relaunch(interpreter())
+    return 0
+
+
+def panel_pixels() -> tuple[int, int] | None:
+    try:
+        text = Path("/sys/class/graphics/fb0/virtual_size").read_text().strip()
+    except OSError:
+        return None
+    parts = text.split(",")
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def terminal_pixels() -> tuple[int, int] | None:
+    try:
+        packed = fcntl.ioctl(sys.stdin.fileno(), termios.TIOCGWINSZ, struct.pack("HHHH", 0, 0, 0, 0))
+    except OSError:
+        return None
+    _rows, _cols, xpix, ypix = struct.unpack("HHHH", packed)
+    if xpix and ypix:
+        return int(xpix), int(ypix)
+    return None
+
+
+def fullscreen_hint() -> str | None:
+    if panel_pixels() != (720, 720):
+        return None
+    pixels = terminal_pixels()
+    if pixels is None:
+        return None
+    if pixels[0] < 640 or pixels[1] < 640:
+        return "Fullscreen the terminal so the panel can use the 720×720 display."
+    return None
+
+
+class App:
+    def __init__(self, stdscr, hint: str | None):
+        self.stdscr = stdscr
+        self.hint = hint
+        self.rows = 0
+        self.cols = 0
+        self.width = 0
+        self.boxes: dict = {}
+        self.entries: list[Row] = []
+        self.expanded: set[Path] = set()
+        self.extra: list[Path] = load_saved_folders()
+        self.roots_opened = False
+        self.notes: dict[Path, str] = {}
+        self.source: Path | None = None
+        self.selected = 0
+        self.scroll = 0
+        self.preview_scroll = 0
+        self.script_inner = 1
+        self.doc_scroll = 0
+        self.view_return = "main"
+        self.messages: list[str] = []
+        self.view = "main"
+        self.help = False
+        self.prompt = ""
+        self.status = "checking"
+        self.device_error = ""
+        self.loaded = False
+        self.mfr = ""
+        self.product_name = ""
+        self.click_index = -1
+        self.click_time = 0.0
+        self.attr_header = curses.A_REVERSE | curses.A_BOLD
+        self.attr_ok = curses.A_REVERSE | curses.A_BOLD
+        self.attr_err = curses.A_REVERSE | curses.A_BOLD
+        self.attr_sel = curses.A_REVERSE
+        self.attr_warn = curses.A_BOLD
+        self.attr_accent = curses.A_BOLD
+        self.attr_good = curses.A_BOLD
+        self.attr_secondary = curses.A_BOLD
+
+    def setup(self) -> None:
+        self.stdscr.keypad(True)
+        try:
+            curses.curs_set(0)
+        except curses.error:
+            pass
+        try:
+            curses.mousemask(curses.BUTTON1_CLICKED | curses.BUTTON1_DOUBLE_CLICKED)
+        except (curses.error, AttributeError):
+            pass
+        if not curses.has_colors():
+            return
+        try:
+            curses.start_color()
+        except curses.error:
+            return
+        try:
+            curses.use_default_colors()
+            default = -1
+        except curses.error:
+            default = curses.COLOR_BLACK
+        curses.init_pair(1, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
+        curses.init_pair(2, curses.COLOR_BLACK, curses.COLOR_GREEN)
+        curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_RED)
+        curses.init_pair(4, curses.COLOR_GREEN, default)
+        curses.init_pair(5, curses.COLOR_WHITE, default)
+        curses.init_pair(6, curses.COLOR_GREEN, curses.COLOR_MAGENTA)
+        curses.init_pair(7, curses.COLOR_WHITE, curses.COLOR_MAGENTA)
+        self.attr_header = curses.color_pair(1) | curses.A_BOLD
+        self.attr_ok = curses.color_pair(6) | curses.A_BOLD
+        self.attr_err = curses.color_pair(3) | curses.A_BOLD
+        self.attr_sel = curses.color_pair(2)
+        self.attr_warn = curses.color_pair(5)
+        self.attr_accent = curses.color_pair(4) | curses.A_BOLD
+        self.attr_good = curses.color_pair(4)
+        self.attr_secondary = curses.color_pair(5)
+
+    def add(self, y: int, x: int, text: str, attr: int = 0) -> None:
+        if y < 0 or y >= self.rows or x >= self.width:
+            return
+        text = text.replace("\x00", "")[: max(0, self.width - x)]
+        if not text:
+            return
+        try:
+            self.stdscr.addstr(y, x, text, attr)
+        except (curses.error, ValueError):
+            pass
+
+    def box(self, y: int, x: int, h: int, w: int, title: str = "", extra: str = "") -> None:
+        if h < 2 or w < 4 or y < 0 or x < 0:
+            return
+        if y + h > self.rows or x + w > self.width:
+            return
+        attr = self.attr_accent
+        try:
+            self.stdscr.hline(y, x + 1, curses.ACS_HLINE, w - 2, attr)
+            self.stdscr.hline(y + h - 1, x + 1, curses.ACS_HLINE, w - 2, attr)
+            if h > 2:
+                self.stdscr.vline(y + 1, x, curses.ACS_VLINE, h - 2, attr)
+                self.stdscr.vline(y + 1, x + w - 1, curses.ACS_VLINE, h - 2, attr)
+            self.stdscr.addch(y, x, curses.ACS_ULCORNER, attr)
+            self.stdscr.addch(y, x + w - 1, curses.ACS_URCORNER, attr)
+            self.stdscr.addch(y + h - 1, x, curses.ACS_LLCORNER, attr)
+            self.stdscr.addch(y + h - 1, x + w - 1, curses.ACS_LRCORNER, attr)
+        except curses.error:
+            pass
+        label_text = f" {title} "[: max(0, w - 4)]
+        self.add(y, x + 2, label_text, attr)
+        if extra:
+            right = f" {extra} "
+            if len(label_text) + len(right) + 3 < w:
+                self.add(y, x + w - 1 - len(right), right, attr)
+
+    def too_small(self) -> bool:
+        return self.rows < MIN_ROWS or self.cols < MIN_COLS
+
+    def current_row(self) -> Row | None:
+        if not self.entries:
+            return None
+        if self.selected < 0 or self.selected >= len(self.entries):
+            return None
+        return self.entries[self.selected]
+
+    def current(self) -> Path | None:
+        row = self.current_row()
+        if row is None or row.kind != "file":
+            return None
+        return row.path
+
+    def select(self, index: int) -> None:
+        if not self.entries:
+            self.selected = 0
+            return
+        index = max(0, min(len(self.entries) - 1, index))
+        if index != self.selected:
+            self.preview_scroll = 0
+        self.selected = index
+
+    def header_attr(self) -> int:
+        if self.device_error:
+            return self.attr_err
+        return self.attr_header
+
+    def refresh_device(self, announce: bool = False) -> None:
+        try:
+            info = read_status()
+        except ScriptError as exc:
+            self.device_error = str(exc)
+            self.loaded = False
+            text = str(exc)
+            if "claim" in text:
+                self.status = "claim failed"
+            elif "missing" in text:
+                self.status = "no keyboard"
+            else:
+                self.status = "not ready"
+            self.messages.append(f"error: {exc}")
+            return
+        self.device_error = ""
+        self.loaded = bool(info["valid"]) and not info["busy"]
+        self.status = status_brief(info)
+        if announce:
+            self.messages.append(status_text(info))
+
+    def emit(self, text: str) -> None:
+        self.messages.append(text)
+        if len(self.messages) > 300:
+            self.messages = self.messages[-300:]
+        self.draw()
+        self.stdscr.refresh()
+
+    def invoke(self, args) -> None:
+        try:
+            run_command(args, emit=self.emit)
+        except ScriptError as exc:
+            self.messages.append(f"error: {exc}")
+
+    def move(self, delta: int) -> None:
+        self.select(self.selected + delta)
+
+    def scroll_script(self, delta: int) -> None:
+        self.preview_scroll = max(0, self.preview_scroll + delta)
+        if self.view in ("read", "guide"):
+            self.doc_scroll = max(0, self.doc_scroll + delta)
+
+    def build_entries(self) -> list[Row]:
+        examples = HERE / "examples"
+        scripts = HERE / "scripts"
+        if not self.roots_opened:
+            for path in (examples, scripts):
+                if path.is_dir():
+                    self.expanded.add(path)
+            self.roots_opened = True
+        rows = visible_tree([examples], self.expanded, include_root=True)
+        script_rows = visible_tree([scripts], self.expanded, include_root=True)
+        if scripts in self.expanded:
+            extra = saved_folder_rows(self.extra, self.expanded)
+            insert_at = len(script_rows)
+            for index, row in enumerate(script_rows):
+                if row.kind == "file":
+                    insert_at = index
+                    break
+            script_rows[insert_at:insert_at] = extra
+        rows.extend(script_rows)
+        return rows
+
+    def rescan(self, announce: bool = True) -> None:
+        previous = self.current_row().path if self.entries else None
+        self.entries = self.build_entries()
+        for row in self.entries:
+            if row.kind == "file" and row.path not in self.notes:
+                self.notes[row.path] = event_note(row.path)
+        found = False
+        if previous is not None:
+            for index, row in enumerate(self.entries):
+                if row.path == previous:
+                    self.selected = index
+                    found = True
+                    break
+        if not found:
+            self.selected = min(self.selected, max(0, len(self.entries) - 1))
+            self.preview_scroll = 0
+            if previous is None:
+                for index, row in enumerate(self.entries):
+                    if row.kind == "file":
+                        self.selected = index
+                        break
+        if self.selected >= len(self.entries):
+            self.selected = max(0, len(self.entries) - 1)
+        self.scroll = min(self.scroll, self.selected)
+        if announce:
+            files = sum(row.kind == "file" for row in self.entries)
+            folders = sum(row.kind == "dir" for row in self.entries)
+            self.messages.append(f"{files} scripts, {folders} folders")
+
+    def toggle_dir(self, path: Path | None = None) -> None:
+        row = self.current_row()
+        target = path or (row.path if row and row.kind == "dir" else None)
+        if target is None:
+            return
+        if target in self.expanded:
+            self.expanded.remove(target)
+        else:
+            self.expanded.add(target)
+        self.rescan(announce=False)
+
+    def activate(self) -> None:
+        row = self.current_row()
+        if row is None:
+            self.messages.append("Select a script first. Put .txt files in scripts/.")
+            return
+        if row.kind == "dir":
+            self.toggle_dir(row.path)
+            return
+        self.do_send()
+
+    def confirm(self, question: str) -> bool:
+        self.prompt = question + "  y/n"
+        try:
+            self.draw()
+            self.stdscr.refresh()
+            while True:
+                key = self.stdscr.getch()
+                if key in (ord("y"), ord("Y")):
+                    return True
+                if key in (ord("n"), ord("N"), 27, ord("q"), ord("Q")):
+                    return False
+        finally:
+            self.prompt = ""
+
+    def ask_text(self, label_text: str, limit: int = NAME_MAX, preset: str = "") -> str | None:
+        try:
+            curses.curs_set(1)
+        except curses.error:
+            pass
+        buf = list(preset)
+        try:
+            while True:
+                shown = label_text + "".join(buf)
+                self.prompt = shown
+                self.draw()
+                self.stdscr.refresh()
+                key = self.stdscr.getch()
+                if key in (10, 13, curses.KEY_ENTER):
+                    return "".join(buf).strip()
+                if key == 27:
+                    return None
+                if key in (curses.KEY_BACKSPACE, 127, 8):
+                    if buf:
+                        buf.pop()
+                    continue
+                if 32 <= key <= 126 and len(buf) < limit:
+                    buf.append(chr(key))
+        finally:
+            self.prompt = ""
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+
+    def current_folder(self) -> Path:
+        row = self.current_row()
+        if row is not None:
+            return row.path if row.kind == "dir" else row.path.parent
+        if self.source is not None:
+            return self.source
+        folder = HERE / "scripts"
+        folder.mkdir(exist_ok=True)
+        return folder
+
+    def run_nano(self, path: Path) -> None:
+        if shutil.which("nano") is None:
+            self.messages.append("nano is not installed. Install it with: sudo apt install nano")
+            return
+        curses.def_prog_mode()
+        curses.endwin()
+        try:
+            subprocess.run(["nano", str(path)])
+        finally:
+            curses.reset_prog_mode()
+            try:
+                curses.curs_set(0)
+            except curses.error:
+                pass
+            self.stdscr.keypad(True)
+            self.stdscr.refresh()
+        self.rescan(announce=False)
+        self.messages.append(f"closed {path.name}")
+
+    def select_path(self, path: Path) -> None:
+        try:
+            key = path.resolve()
+        except OSError:
+            key = path
+        for index, row in enumerate(self.entries):
+            if row.path == path or row.path == key:
+                self.select(index)
+                return
+
+    def do_fetch(self) -> None:
+        raw = self.ask_text("folder: ", limit=240, preset=FOLDER_HINT)
+        if not raw:
+            self.messages.append("folder left unchanged")
+            return
+        folder = Path(raw).expanduser()
+        if not folder.is_dir():
+            self.messages.append(f"not a folder: {folder}")
+            self.messages.append(f"example: {FOLDER_HINT}")
+            return
+        try:
+            folder = folder.resolve()
+        except OSError:
+            pass
+        scripts = (HERE / "scripts").resolve()
+        examples = (HERE / "examples").resolve()
+        if folder in (scripts, examples) or scripts in folder.parents or examples in folder.parents:
+            self.messages.append("that folder is already in the list")
+            self.expanded.add(HERE / "scripts")
+            self.expanded.add(folder)
+            self.rescan(announce=False)
+            self.select_path(folder)
+            return
+        if folder in self.extra:
+            self.messages.append(f"{folder.name} is already under scripts")
+        else:
+            self.extra.append(folder)
+            try:
+                save_saved_folders(self.extra)
+            except OSError as exc:
+                self.extra.pop()
+                self.messages.append(f"error: {exc}")
+                return
+            self.messages.append(f"saved {folder.name} under scripts")
+        self.expanded.add(HERE / "scripts")
+        self.expanded.add(folder)
+        self.rescan(announce=False)
+        self.select_path(folder)
+
+    def do_read(self) -> None:
+        if self.current() is None:
+            self.messages.append("Select a script first.")
+            return
+        self.doc_scroll = 0
+        self.view_return = "main"
+        self.view = "read"
+
+    def do_edit(self) -> None:
+        path = self.current()
+        if path is None:
+            self.messages.append("Select a script first.")
+            return
+        self.run_nano(path)
+
+    def do_new(self) -> None:
+        folder = self.current_folder()
+        name = self.ask_text("new file: ", limit=64)
+        if not name:
+            if name == "":
+                self.messages.append("new file cancelled")
+            return
+        if "/" in name or name in (".", ".."):
+            self.messages.append("Use a file name. f sets the folder.")
+            return
+        if not name.endswith(".txt"):
+            name += ".txt"
+        path = folder / name
+        if path.exists() and not self.confirm(f"Overwrite {name}?"):
+            self.messages.append("new file cancelled")
+            return
+        try:
+            if not path.exists():
+                path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            self.messages.append(f"error: {exc}")
+            return
+        self.expanded.add(folder)
+        self.run_nano(path)
+        for index, row in enumerate(self.entries):
+            if row.kind == "file" and row.path == path:
+                self.select(index)
+                break
+
+    def open_guide(self) -> None:
+        self.doc_scroll = 0
+        self.view_return = self.view if self.view != "guide" else "main"
+        self.view = "guide"
+
+    def close_page(self) -> None:
+        self.view = self.view_return if self.view_return in ("main", "identity", "read") else "main"
+        if self.view == "guide":
+            self.view = "main"
+
+    def do_send(self) -> None:
+        path = self.current()
+        if path is None:
+            self.messages.append("Select a script first. Put .txt files in scripts/.")
+            return
+        rel = label(path)
+        if not self.confirm(f"Send {rel}?"):
+            self.messages.append("send cancelled")
+            return
+        self.messages.append(f"sending {rel}")
+        self.draw()
+        self.stdscr.refresh()
+        self.invoke(namespace("send", file=str(path)))
+        self.refresh_device()
+
+    def do_verify(self) -> None:
+        path = self.current()
+        if path is None:
+            self.messages.append("Select a script first.")
+            return
+        self.messages.append(f"verifying {label(path)}")
+        self.draw()
+        self.stdscr.refresh()
+        self.invoke(namespace("verify", file=str(path)))
+        self.refresh_device()
+
+    def do_clear(self) -> None:
+        if not self.confirm("Clear the stored script?"):
+            self.messages.append("clear cancelled")
+            return
+        self.invoke(namespace("clear"))
+        self.refresh_device()
+
+    def do_list(self) -> None:
+        self.invoke(namespace("list"))
+
+    def open_identity(self) -> None:
+        self.view = "identity"
+        self.draw()
+        self.stdscr.refresh()
+        try:
+            self.mfr, self.product_name = read_names()
+        except ScriptError as exc:
+            self.messages.append(f"error: {exc}")
+            return
+        self.messages.append(f"name {self.mfr or '(not set)'} / {self.product_name or '(not set)'}")
+
+    def commit_identity(self, **kwargs) -> None:
+        self.invoke(namespace("identity", **kwargs))
+        try:
+            self.mfr, self.product_name = read_names()
+        except ScriptError as exc:
+            self.messages.append(f"error: {exc}")
+
+    def on_mouse(self) -> None:
+        if self.view != "main":
+            return
+        try:
+            _ident, _mx, my, _mz, _bstate = curses.getmouse()
+        except curses.error:
+            return
+        origin, height = self.boxes.get("script", (0, 0))
+        if my <= origin or my >= origin + height - 1:
+            return
+        index = self.scroll + (my - (origin + 1))
+        if index < 0 or index >= len(self.entries):
+            return
+        now = time.monotonic()
+        if self.click_index == index and now - self.click_time < 0.5:
+            self.select(index)
+            self.click_index = -1
+            self.click_time = 0
+            self.activate()
+            return
+        self.select(index)
+        self.click_index = index
+        self.click_time = now
+
+    def handle_main(self, key: int) -> bool:
+        if key in (ord("q"), ord("Q")):
+            return False
+        if key in (curses.KEY_UP, ord("k")):
+            self.move(-1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            self.move(1)
+        elif key in (ord("u"), ord("U")):
+            self.scroll_script(-1)
+        elif key in (ord("i"), ord("I")):
+            self.scroll_script(1)
+        elif key == curses.KEY_RIGHT:
+            row = self.current_row()
+            if row and row.kind == "dir" and row.path not in self.expanded:
+                self.toggle_dir(row.path)
+        elif key == curses.KEY_LEFT:
+            row = self.current_row()
+            if row and row.kind == "dir" and row.path in self.expanded:
+                self.toggle_dir(row.path)
+            elif row:
+                parent = row.path.parent
+                for index, item in enumerate(self.entries):
+                    if item.path == parent:
+                        self.select(index)
+                        break
+        elif key == curses.KEY_PPAGE:
+            self.move(-max(1, self.script_inner - 1))
+        elif key == curses.KEY_NPAGE:
+            self.move(max(1, self.script_inner - 1))
+        elif key == curses.KEY_HOME:
+            self.select(0)
+        elif key == curses.KEY_END:
+            self.select(max(0, len(self.entries) - 1))
+        elif key in (10, 13, curses.KEY_ENTER, ord("s"), ord("S")):
+            self.activate()
+        elif key in (ord("v"), ord("V")):
+            self.do_verify()
+        elif key in (ord("c"), ord("C")):
+            self.do_clear()
+        elif key in (ord("p"), ord("P")):
+            self.refresh_device(announce=True)
+        elif key in (ord("g"), ord("G")):
+            self.open_identity()
+        elif key in (ord("r"), ord("R")):
+            self.do_read()
+        elif key in (ord("e"), ord("E")):
+            self.do_edit()
+        elif key in (ord("n"), ord("N")):
+            self.do_new()
+        elif key in (ord("f"), ord("F")):
+            self.do_fetch()
+        elif key in (ord("h"), ord("H"), ord("?")):
+            self.open_guide()
+        elif key in (ord("l"), ord("L")):
+            self.do_list()
+        return True
+
+    def handle_identity(self, key: int) -> bool:
+        if key in (ord("q"), ord("Q")):
+            return False
+        if key in (ord("b"), ord("B"), 27):
+            self.view = "main"
+            return True
+        if key in (ord("m"), ord("M")):
+            name = self.ask_text("manufacturer: ")
+            if name:
+                self.commit_identity(manufacturer=name)
+            elif name == "":
+                self.messages.append("name left unchanged")
+            return True
+        if key in (ord("p"), ord("P")):
+            name = self.ask_text("product: ")
+            if name:
+                self.commit_identity(product=name)
+            elif name == "":
+                self.messages.append("name left unchanged")
+            return True
+        if key in (ord("a"), ord("A")):
+            if self.confirm("Pick a random fictional name?"):
+                self.commit_identity(random=True)
+            return True
+        if key in (ord("x"), ord("X")):
+            if self.confirm("Reset USB names?"):
+                self.commit_identity(reset=True)
+            return True
+        if key in (ord("h"), ord("H"), ord("?")):
+            self.open_guide()
+        return True
+
+    def handle_page(self, key: int) -> bool:
+        if key in (ord("b"), ord("B"), ord("q"), ord("Q"), 27):
+            self.close_page()
+            return True
+        if key in (curses.KEY_UP, ord("k"), ord("u"), ord("U")):
+            self.doc_scroll -= 1
+        elif key in (curses.KEY_DOWN, ord("j"), ord("i"), ord("I")):
+            self.doc_scroll += 1
+        elif key == curses.KEY_PPAGE:
+            self.doc_scroll -= max(1, self.rows - 4)
+        elif key == curses.KEY_NPAGE:
+            self.doc_scroll += max(1, self.rows - 4)
+        elif key == curses.KEY_HOME:
+            self.doc_scroll = 0
+        return True
+
+    def handle(self, key: int) -> bool:
+        if key == curses.KEY_RESIZE:
+            return True
+        if self.too_small():
+            return key not in (ord("q"), ord("Q"))
+        if self.view in ("read", "guide"):
+            return self.handle_page(key)
+        if key == curses.KEY_MOUSE:
+            self.on_mouse()
+            return True
+        if self.view == "identity":
+            return self.handle_identity(key)
+        return self.handle_main(key)
+
+    def clamp_scroll(self, inner: int) -> None:
+        self.script_inner = max(1, inner)
+        if not self.entries:
+            self.selected = 0
+            self.scroll = 0
+            return
+        self.selected = max(0, min(len(self.entries) - 1, self.selected))
+        if self.selected < self.scroll:
+            self.scroll = self.selected
+        if self.selected >= self.scroll + self.script_inner:
+            self.scroll = self.selected - self.script_inner + 1
+
+    def footer_text(self) -> str:
+        if self.prompt:
+            return " " + self.prompt
+        if self.view == "identity":
+            if self.width >= 64:
+                return " m manufacturer  p product  a random  x reset  b back  q quit"
+            return " m name  p product  a random  x reset  b back"
+        if self.width >= 70:
+            return " j/k list  u/i script  enter  r read  e edit  n new  f folder  h  q"
+        return " u/i script  enter  r  e  n  h  q"
+
+    def safety_text(self) -> str:
+        if self.width >= 60:
+            return " Switch internal to load. External before Script play."
+        return " Internal to load. External to play."
+
+    def fill(self, y: int, x: int, h: int, w: int, attr: int = 0) -> None:
+        blank = " " * max(0, w)
+        for row in range(max(0, h)):
+            self.add(y + row, x, blank, attr)
+
+    def draw_too_small(self) -> None:
+        self.add(0, 0, " kvxkeyinject".ljust(self.width), self.attr_header)
+        lines = [
+            "This window is too small.",
+            "Fullscreen it on the 720×720 display.",
+            "About 48 columns by 18 rows.",
+            "q quits.",
+        ]
+        y = 2
+        width = max(8, self.width)
+        for line in lines:
+            for part in wrap_plain(line, width):
+                if y >= self.rows:
+                    return
+                self.add(y, 0, part)
+                y += 1
+
+    def draw_scripts(self, y: int, h: int) -> None:
+        inner_h = h - 2
+        inner_w = self.width - 4
+        self.clamp_scroll(inner_h)
+        extra = f"{self.selected + 1}/{len(self.entries)}" if self.entries else "0"
+        self.box(y, 0, h, self.width, "scripts", extra)
+        if not self.entries:
+            if self.source is None:
+                self.add(y + 1, 2, "f sets a folder. Example:", self.attr_secondary)
+                if inner_h > 1:
+                    self.add(y + 2, 2, FOLDER_HINT, self.attr_accent)
+            else:
+                self.add(y + 1, 2, "This folder is empty.", self.attr_warn)
+                if inner_h > 1:
+                    self.add(y + 2, 2, "n creates a script.", self.attr_secondary)
+            return
+        for row_i in range(inner_h):
+            index = self.scroll + row_i
+            if index >= len(self.entries):
+                break
+            row = self.entries[index]
+            note = self.notes.get(row.path, "") if row.kind == "file" else ""
+            name = tree_label(row, self.expanded)
+            if index == self.selected:
+                attr = self.attr_sel
+            elif row.kind == "dir":
+                attr = self.attr_accent
+            elif note == "error":
+                attr = self.attr_warn
+            else:
+                attr = self.attr_secondary
+            if note and inner_w > len(note) + 6:
+                room = inner_w - len(note) - 1
+                shown = name[:room]
+                text = shown + " " * (inner_w - len(shown) - len(note)) + note
+            else:
+                text = name
+            self.add(y + 1 + row_i, 2, text.ljust(inner_w), attr)
+
+    def preview_lines(self, inner_w: int) -> list[str]:
+        row = self.current_row()
+        if row is None:
+            return [f"f sets a folder. Example: {FOLDER_HINT}"]
+        if row.kind == "dir":
+            if not row.path.is_dir():
+                return [str(row.path), "This folder is missing."]
+            opened = row.path in self.expanded
+            state = "open" if opened else "closed"
+            return [
+                str(row.path),
+                f"This folder is {state}. Enter opens or closes it.",
+            ]
+        try:
+            text = row.path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return wrap_plain(str(exc), inner_w)
+        lines = text.splitlines() or ["(empty file)"]
+        return [line[:inner_w] for line in lines]
+
+    def draw_preview(self, y: int, h: int) -> None:
+        inner_h = max(0, h - 2)
+        inner_w = max(1, self.width - 4)
+        path = self.current()
+        row = self.current_row()
+        title = label(path) if path else (row.path.name if row else "preview")
+        lines = self.preview_lines(inner_w)
+        max_scroll = top_line_limit(len(lines))
+        self.preview_scroll = max(0, min(self.preview_scroll, max_scroll))
+        extra = f"{self.preview_scroll + 1}/{len(lines)}" if len(lines) > inner_h else ""
+        self.box(y, 0, h, self.width, title, extra)
+        visible = lines[self.preview_scroll : self.preview_scroll + inner_h]
+        for row_i, line in enumerate(visible):
+            self.add(y + 1 + row_i, 2, line, self.attr_secondary)
+
+    def draw_identity(self, y: int, h: int) -> None:
+        self.box(y, 0, h, self.width, "usb name")
+        rows = [
+            (1, "manufacturer", self.attr_accent),
+            (2, self.mfr or "(not set)", self.attr_good if self.mfr else self.attr_warn),
+            (3, "product", self.attr_accent),
+            (4, self.product_name or "(not set)", self.attr_good if self.product_name else self.attr_warn),
+            (6, "Shown after the left switch is flipped.", self.attr_secondary),
+        ]
+        inner_h = h - 2
+        for row, text, attr in rows:
+            if row > inner_h:
+                break
+            self.add(y + row, 2, text, attr)
+
+    def draw_log(self, y: int, h: int) -> None:
+        inner_h = max(0, h - 2)
+        inner_w = max(8, self.width - 4)
+        self.box(y, 0, h, self.width, "activity")
+        wrapped: list[str] = []
+        for message in self.messages[-80:]:
+            wrapped.extend(wrap_plain(message, inner_w))
+        visible = wrapped[-inner_h:] if inner_h else []
+        for row, line in enumerate(visible):
+            attr = self.attr_err if line.startswith("error:") else self.attr_secondary
+            self.add(y + 1 + row, 2, line, attr)
+
+    def page_lines(self) -> list[tuple[str, bool]]:
+        if self.view == "guide":
+            return guide_text()
+        path = self.current()
+        if path is None:
+            return [("(no script)", False)]
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as exc:
+            return [(str(exc), False)]
+        rows = text.splitlines() or ["(empty file)"]
+        return [(line, False) for line in rows]
+
+    def draw_page(self, title: str) -> None:
+        self.add(0, 0, (" " + title).ljust(self.width)[: self.width], self.attr_header)
+        inner_h = max(1, self.rows - 2)
+        inner_w = max(8, self.width)
+        wrapped: list[tuple[str, bool]] = []
+        for text, heading in self.page_lines():
+            if heading:
+                wrapped.append((text[:inner_w], True))
+                continue
+            if self.view == "read":
+                chunk = text
+                wrapped.append((chunk[:inner_w], False))
+                chunk = chunk[inner_w:]
+                while chunk:
+                    wrapped.append((chunk[:inner_w], False))
+                    chunk = chunk[inner_w:]
+                continue
+            for line in wrap_plain(text, inner_w) if text else [""]:
+                wrapped.append((line, False))
+        max_scroll = top_line_limit(len(wrapped))
+        self.doc_scroll = max(0, min(self.doc_scroll, max_scroll))
+        visible = wrapped[self.doc_scroll : self.doc_scroll + inner_h]
+        for row in range(inner_h):
+            if row >= len(visible):
+                break
+            line, heading = visible[row]
+            attr = self.attr_accent if heading else self.attr_secondary
+            self.add(1 + row, 0, line, attr)
+        hint = " u/i j/k scroll   b back"
+        self.add(self.rows - 1, 0, hint.ljust(self.width)[: self.width], self.attr_header)
+
+    def draw(self) -> None:
+        self.rows, self.cols = self.stdscr.getmaxyx()
+        self.width = max(1, self.cols - 1)
+        self.stdscr.erase()
+        if self.view == "read" and not self.too_small():
+            path = self.current()
+            self.draw_page(label(path) if path else "script")
+            return
+        if self.view == "guide" and not self.too_small():
+            self.draw_page("help")
+            return
+        if self.too_small():
+            self.draw_too_small()
+            return
+        self.boxes = layout(self.rows)
+        title = " kvxkeyinject"
+        status = " " + self.status
+        gap = self.width - len(title) - len(status)
+        if gap < 1:
+            status = status[: max(0, self.width - len(title) - 1)]
+            gap = max(1, self.width - len(title) - len(status))
+        header = (title + " " * gap + status)[: self.width]
+        self.add(0, 0, header.ljust(self.width), self.header_attr())
+        if not self.device_error:
+            status_attr = self.attr_ok if self.loaded else self.attr_header
+            self.add(0, max(0, self.width - len(status)), status, status_attr)
+        self.add(1, 0, self.safety_text()[: self.width], self.attr_secondary)
+        y, h = self.boxes["script"]
+        if self.view == "identity":
+            self.draw_identity(y, h)
+        else:
+            self.draw_scripts(y, h)
+        preview = self.boxes.get("preview")
+        if preview and self.view == "main":
+            self.draw_preview(*preview)
+        elif preview and self.view == "identity":
+            self.draw_log_gap(preview)
+        self.draw_log(*self.boxes["log"])
+        footer = self.footer_text()
+        if len(footer) > self.width:
+            footer = footer[-self.width :]
+        self.add(self.boxes["footer"], 0, footer.ljust(self.width)[: self.width], self.attr_header)
+
+    def draw_log_gap(self, preview: tuple[int, int]) -> None:
+        """Keep the name page filled when the preview rows are spare."""
+        y, h = preview
+        self.box(y, 0, h, self.width, "note")
+        note = "VID and PID stay 4242:0003. Names are fictional, up to 28 characters."
+        inner_w = max(8, self.width - 4)
+        for row, line in enumerate(wrap_plain(note, inner_w)[: max(0, h - 2)]):
+            self.add(y + 1 + row, 2, line)
+
+    def loop(self) -> None:
+        self.setup()
+        self.rescan(announce=False)
+        self.messages.append("Load only. Play with Script play after the switch is external.")
+        if self.hint:
+            self.messages.append(self.hint)
+        self.draw()
+        self.stdscr.refresh()
+        self.refresh_device(announce=True)
+        while True:
+            self.draw()
+            self.stdscr.refresh()
+            key = self.stdscr.getch()
+            if not self.handle(key):
+                return
+
+
+def run_tui(stdscr) -> None:
+    App(stdscr, fullscreen_hint()).loop()
+
+
+def launch_ui() -> int:
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print("Run kvxkeyinject in a terminal on the Hackberry.")
+        print("The panel is laid out for a fullscreen window on the 720×720 display.")
+        return 1
+    try:
+        sys.stdout.write("\033]0;kvxkeyinject\007")
+        sys.stdout.flush()
+    except OSError:
+        pass
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
+    os.environ.setdefault("ESCDELAY", "25")
+    try:
+        curses.wrapper(run_tui)
+    except curses.error as exc:
+        print(f"Panel UI is not available ({exc}).")
+        menu()
+    return 0
+
+
+def menu() -> None:
+    print("kvxkeyinject. The keyboard switch must be internal.")
+    print("1 ping  2 status  3 send  4 verify  5 clear  6 identity  7 list  8 files  q quit")
+    while True:
+        try:
+            choice = input("> ").strip()
+        except EOFError:
+            print()
+            return
+        if choice in ("q", "quit", ""):
+            return
+        try:
+            if choice == "1":
+                run_command(namespace("ping"))
+            elif choice == "2":
+                run_command(namespace("status"))
+            elif choice == "3":
+                path = input("script file: ").strip()
+                run_command(namespace("send", file=path))
+            elif choice == "4":
+                path = input("script file: ").strip()
+                run_command(namespace("verify", file=path))
+            elif choice == "5":
+                run_command(namespace("clear"))
+            elif choice == "6":
+                print("1 show  2 set  3 random  4 reset")
+                which = input("identity> ").strip()
+                if which == "2":
+                    run_command(namespace(
+                        "identity",
+                        manufacturer=input("manufacturer: "),
+                        product=input("product: "),
+                    ))
+                elif which == "3":
+                    run_command(namespace("identity", random=True))
+                elif which == "4":
+                    run_command(namespace("identity", reset=True))
+                else:
+                    run_command(namespace("identity"))
+            elif choice == "7":
+                run_command(namespace("list"))
+            elif choice == "8":
+                found = discover()
+                if not found:
+                    print("no .txt files in examples/ or scripts/")
+                for path in found:
+                    print(f"{label(path)}  {event_note(path)}")
+            else:
+                print("unknown choice")
+        except ScriptError as exc:
+            print(f"error: {exc}")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Load a script into the Hackberry keyboard",
+        epilog="With no arguments, open the panel. Fullscreen it on the 720×720 display.",
+    )
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("ping")
+    sub.add_parser("list")
+    sub.add_parser("info")
+    sub.add_parser("status")
+    sub.add_parser("clear")
+    send = sub.add_parser("send")
+    send.add_argument("file")
+    verify = sub.add_parser("verify")
+    verify.add_argument("file")
+    ident = sub.add_parser("identity")
+    ident.add_argument("--manufacturer")
+    ident.add_argument("--product")
+    ident.add_argument("--random", action="store_true")
+    ident.add_argument("--reset", action="store_true")
+    parser.add_argument("--selftest", action="store_true")
+    return parser
+
+
+def check_layout() -> None:
+    for rows in range(MIN_ROWS, 80):
+        got = layout(rows)
+        y, height = got["script"]
+        end = y + height
+        preview = got["preview"]
+        if rows >= 28:
+            if not preview or preview[1] <= got["log"][1]:
+                raise ScriptError(f"script view should be larger than the log at {rows} rows")
+            py, ph = preview
+            if py != end or ph < 4:
+                raise ScriptError(f"preview placed wrong at {rows} rows")
+            end = py + ph
+        elif preview:
+            py, ph = preview
+            if py != end or ph < 4:
+                raise ScriptError(f"preview placed wrong at {rows} rows")
+            end = py + ph
+        ly, lh = got["log"]
+        if ly != end or ly + lh - 1 != rows - 2:
+            raise ScriptError(f"log placed wrong at {rows} rows")
+        if height < 5 or lh < 5:
+            raise ScriptError(f"panel is cramped at {rows} rows")
+        if got["footer"] != rows - 1:
+            raise ScriptError("footer is not the last row")
+
+
+def selftest() -> None:
+    sample = b"123456789"
+    if crc32(sample) != 0xCBF43926:
+        raise ScriptError("CRC32 does not match the IEEE check value")
+    payload = translate("STRING Hi!\nENTER\n")
+    if payload[:4] != bytes((EVT_DOWN, UNSHIFTED["h"], MOD_LSFT, 0)):
+        raise ScriptError("STRING did not encode a shifted key down")
+    if bytes((EVT_DOWN, UNSHIFTED["i"], 0, 0)) not in payload:
+        raise ScriptError("STRING did not encode a key down")
+    repeated = translate("REPEAT 2\nSTRING a\nENDREPEAT\n")
+    if repeated.count(bytes((EVT_DOWN, UNSHIFTED["a"], 0, 0))) != 2:
+        raise ScriptError("REPEAT did not expand")
+    chord = translate("CTRL-c\n", gap_ms=0)
+    if chord != _key(UNSHIFTED["c"], MOD_LCTL):
+        raise ScriptError("CTRL chord did not include the modifier on key up")
+    if translate("CTRL c\n") != chord or translate("CONTROL c\n") != chord:
+        raise ScriptError("CTRL c did not match the hyphen chord")
+    gui = translate("GUI r\n")
+    if gui != _key(UNSHIFTED["r"], MOD_LGUI) or translate("WINDOWS r\n") != gui:
+        raise ScriptError("GUI r did not hold the Windows key")
+    if translate("GUI\n") != _key(0, MOD_LGUI) or translate("WINDOWS GUI\n") != _key(0, MOD_LGUI):
+        raise ScriptError("GUI alone did not tap the Windows key")
+    if translate("STRINGLN a\n") != _char("a") + _key(NAMED["ENTER"]):
+        raise ScriptError("STRINGLN did not type and press Enter")
+    if top_line_limit(18) != 17 or top_line_limit(1) != 0:
+        raise ScriptError("script scroll stopped before the last line")
+    if translate("ALT F4\n") != _key(NAMED["F4"], MOD_LALT):
+        raise ScriptError("ALT F4 did not encode")
+    if translate("ESCAPE\n") != _key(NAMED["ESC"]) or translate("MENU\n") != _key(NAMED["APP"]):
+        raise ScriptError("ESCAPE or MENU did not encode")
+    for name in ("PRINTSCREEN", "PAGEUP", "PAGEDOWN", "HOME", "END"):
+        if translate(name + "\n") != _key(NAMED[name]):
+            raise ScriptError(f"{name} did not encode")
+    paced = translate("DEFAULTDELAY 50\nSTRING ab\n")
+    if paced != _char("a") + _char("b") + _delay(50):
+        raise ScriptError("DEFAULTDELAY did not wait after STRING")
+    if translate("REM note\n# note\nSTRING a\n") != translate("STRING a\n"):
+        raise ScriptError("REM was not ignored")
+    sample_script = "\n".join((
+        "REM Open Run, then Command Prompt, then ping",
+        "DEFAULTDELAY 200",
+        "GUI r",
+        "DELAY 500",
+        "STRING cmd",
+        "ENTER",
+        "DELAY 700",
+        "STRING ping google.com",
+        "ENTER",
+    ))
+    if not translate(sample_script):
+        raise ScriptError("example script produced no events")
+    check_name("Cedar Labs")
+    try:
+        check_name("Logitech Board")
+    except ScriptError:
+        pass
+    else:
+        raise ScriptError("real vendor name was accepted")
+    manufacturer, product = random_identity()
+    check_name(manufacturer)
+    check_name(product)
+    if not translate(open_example("hello.txt")):
+        raise ScriptError("hello example produced no events")
+    if wrap_plain("one two three", 7) != ["one two", "three"]:
+        raise ScriptError("text wrap broke")
+    check_layout()
+    if rule_group() != "users":
+        raise ScriptError("udev rule group was not parsed")
+    found = discover()
+    if not any(path.name == "hello.txt" for path in found):
+        raise ScriptError("hello example was not listed")
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "top.txt").write_text("STRING a\n", encoding="utf-8")
+        nested = root / "Pack"
+        nested.mkdir()
+        (nested / "inside.txt").write_text("STRING b\n", encoding="utf-8")
+        closed = visible_tree([root], set(), include_root=False)
+        labels = [tree_label(row, set()) for row in closed]
+        if ">Pack" not in labels or any(row.path.name == "inside.txt" for row in closed):
+            raise ScriptError(f"closed folder was not hidden: {labels}")
+        opened = visible_tree([root], {nested}, include_root=False)
+        shown = [tree_label(row, {nested}) for row in opened]
+        if "↓Pack" not in shown or "│ inside.txt" not in shown:
+            raise ScriptError(f"open folder did not show its file: {shown}")
+        store = root / ".folders"
+        save_saved_folders([nested], store)
+        loaded = load_saved_folders(store)
+        if loaded != [nested.resolve()]:
+            raise ScriptError(f"saved folder was not kept: {loaded}")
+        remembered = saved_folder_rows(loaded, {nested.resolve()})
+        remembered_labels = [tree_label(row, {nested.resolve()}) for row in remembered]
+        if "│ ↓Pack" not in remembered_labels or "│ │ inside.txt" not in remembered_labels:
+            raise ScriptError(f"saved folder was not placed under scripts: {remembered_labels}")
+    try:
+        read_script("/no/such/kvxkeyinject.txt")
+    except ScriptError:
+        pass
+    else:
+        raise ScriptError("missing script was accepted")
+    print("selftest ok")
+
+
+def main(argv: list[str]) -> int:
+    try:
+        return dispatch(argv)
+    except KeyboardInterrupt:
+        print()
+        return 130
+
+
+def dispatch(argv: list[str]) -> int:
+    if not argv:
+        code = prepare_dependencies()
+        if code:
+            return code
+        return launch_ui()
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.selftest:
+            selftest()
+            return 0
+        if not args.cmd:
+            parser.print_help()
+            return 2
+        code = prepare_dependencies()
+        if code:
+            return code
+        run_command(args)
+    except ScriptError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) == 2 and sys.argv[1] == "--selftest":
+        try:
+            selftest()
+        except ScriptError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+    sys.exit(main(sys.argv[1:]))

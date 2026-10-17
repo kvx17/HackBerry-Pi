@@ -1,1 +1,2 @@
+# Python package only. kvxkeyinject also checks libusb, the udev rule, and the users group.
 pyusb

@@ -1,0 +1,6 @@
+REM Type the same line three times.
+DEFAULTDELAY 40
+REPEAT 3
+STRING Again.
+ENTER
+ENDREPEAT

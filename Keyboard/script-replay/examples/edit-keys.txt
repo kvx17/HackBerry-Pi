@@ -1,0 +1,16 @@
+REM Open Notepad, type a line, then replace it with the edit keys.
+DEFAULTDELAY 60
+GUI r
+DELAY 400
+STRING notepad
+ENTER
+DELAY 800
+STRING Hackberry keyboard
+HOME
+SHIFT END
+STRING kvx
+ENTER
+LEFT
+BACKSPACE
+DELETE
+ENTER

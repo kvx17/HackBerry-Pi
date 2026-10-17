@@ -97,6 +97,14 @@ From the repo root:
 
 ```bash
 cd Keyboard/script-replay
+python3 kvxkeyinject
+```
+
+The loader used to be `hackberry_script.py`. The first run checks pyusb, libusb, the udev rule, and membership of the `users` group. It prints what is missing and the commands, and installs them only after you answer yes. That creates `.venv` when it is missing, installs `requirements.txt` there, and copies the udev rule with sudo.
+
+The same steps by hand:
+
+```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 sudo cp 99-hackberry-script.rules /etc/udev/rules.d/
@@ -104,11 +112,11 @@ sudo udevadm control --reload
 sudo udevadm trigger
 ```
 
-The udev rule lets your user open raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, the tool fails with `claim failure`. Your user needs to be in the `users` group, which is what the rule grants access to.
+The udev rule lets your user open raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, the tool fails with `claim failure`. Your user needs to be in the `users` group, which is what the rule grants access to. If you were just added to that group, the next start picks it up. Otherwise log out and back in.
 
 ### 4. Where the scripts are
 
-The tool reads **one file path**. It does not scan a folder.
+The panel lists `examples/*.txt` and `scripts/*.txt`. A command such as `send` still reads **one file path**. It does not scan a folder.
 
 | Path | What it is |
 | --- | --- |
@@ -121,7 +129,7 @@ Run the tool from `Keyboard/script-replay`, and pass a path relative to that dir
 - `examples/hello.txt` — one-line greeting
 - `examples/signoff.txt` — short sign-off
 
-`examples/hello.txt` is a one-line greeting. Menu option **7 list** lists USB devices at `4242:0003`. It does not list files.
+`examples/hello.txt` is a one-line greeting. The `list` command lists USB devices at `4242:0003`. It does not list files.
 
 A script is plain text. The Pi expands it; the controller stores key down, key up, and delay events, up to 32 KB of those events. The gap between characters is 10 ms. Lines starting with `#` are ignored.
 
@@ -139,34 +147,35 @@ Also accepted: `TAB`, `SPACE`, `BACKSPACE`, `ESC`, `DELETE`, `UP`, `DOWN`, `LEFT
 
 ### 5. Send a script
 
-Left switch internal. From `Keyboard/script-replay`:
+Left switch internal. From `Keyboard/script-replay`, fullscreen a terminal on the 720×720 display:
 
 ```bash
-.venv/bin/python hackberry_script.py ping
-.venv/bin/python hackberry_script.py send scripts/myscript.txt
-.venv/bin/python hackberry_script.py verify scripts/myscript.txt
+python3 kvxkeyinject
 ```
 
-`ping` should print a status line. `send` prints progress. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
-
-With no arguments the same actions are a menu:
-
-```bash
-.venv/bin/python hackberry_script.py
-```
+That opens the panel. A fullscreen terminal on that display is about 80 columns by 40 rows: script list, a preview of the selected file, and an activity log.
 
 | Key | Action |
 | --- | --- |
-| 1 | ping |
-| 2 | status |
-| 3 | send — asks for a script file path |
-| 4 | verify — asks for the same path |
-| 5 | clear the slot |
-| 6 | USB identity |
-| 7 | list USB devices |
+| j/k or arrows | select a script |
+| enter or s | send the selected script |
+| v | verify it against the slot |
+| c | clear the slot |
+| p | ping |
+| i | USB name |
+| l | list USB devices |
+| r | rescan the script folders |
 | q | quit |
 
-For menu option 3 or 4, type the path, for example `scripts/myscript.txt` or `examples/hello.txt`.
+Send and clear ask for `y` first. The same actions from the command line:
+
+```bash
+.venv/bin/python kvxkeyinject ping
+.venv/bin/python kvxkeyinject send scripts/myscript.txt
+.venv/bin/python kvxkeyinject verify scripts/myscript.txt
+```
+
+`ping` should print a status line. `send` prints progress. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
 
 ### 6. Play it on the other computer
 
@@ -184,9 +193,9 @@ An empty slot does nothing. To load a different script, flip the switch back to 
 Manufacturer and product strings can be changed from the Pi. They show up on the other computer after the next switch flip, because that flip re-enumerates the controller. VID and PID stay `4242:0003`. Names are up to 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected.
 
 ```bash
-.venv/bin/python hackberry_script.py identity --manufacturer "Cedar Labs" --product "Field Keyboard"
-.venv/bin/python hackberry_script.py identity --random
-.venv/bin/python hackberry_script.py identity --reset
+.venv/bin/python kvxkeyinject identity --manufacturer "Cedar Labs" --product "Field Keyboard"
+.venv/bin/python kvxkeyinject identity --random
+.venv/bin/python kvxkeyinject identity --reset
 ```
 
 `--random` picks a fictional label, such as `Cedar Labs` / `Field Board K240`.

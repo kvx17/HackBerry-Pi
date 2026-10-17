@@ -253,7 +253,7 @@ def flash_firmware(build: bool, timeout: float) -> None:
     print("Quit Vial and open it again so it reads the keyboard drawing from the new firmware.")
     print("Then File, Load saved layout, and choose Keyboard/HackberryPi_CM5_9900.vil.")
     print("The saved map stays across a flash until that file is loaded.")
-    print("Send a script afterward with Keyboard/script-replay/hackberry_script.py.")
+    print("Send a script afterward with Keyboard/script-replay/kvxkeyinject.")
 
 
 def restore_stock(assume_yes: bool, timeout: float) -> None:

@@ -1,0 +1,19 @@
+REM Open Notepad and type the characters this keyboard can send.
+DEFAULTDELAY 80
+GUI r
+DELAY 400
+STRING notepad
+ENTER
+DELAY 800
+STRING Hello from the Hackberry.
+ENTER
+STRING abc XYZ 0123456789
+ENTER
+STRING !@#$%^&*()_+-=
+ENTER
+STRING []{}|;:'",.<>/?`~
+ENTER
+STRING \ backslash
+ENTER
+STRING Done.
+ENTER
