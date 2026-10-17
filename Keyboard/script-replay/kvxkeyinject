@@ -276,6 +276,14 @@ def _modifier_line(line: str) -> bytes | None:
     return _key(keycode, modifier | extra)
 
 
+def _combo(line: str) -> bytes | None:
+    """CTRL-ALT t, CTRL-ALT-t, and CTRL ALT t are the same chord."""
+    parts = line.replace("-", " ").split()
+    if not parts or parts[0].upper() not in MODS:
+        return None
+    return _modifier_line(" ".join(parts))
+
+
 def translate(text: str, gap_ms: int = GAP_MS) -> bytes:
     """Expand the text subset into 4-byte events. REPEAT is expanded here."""
     ops = []
@@ -331,7 +339,7 @@ def translate(text: str, gap_ms: int = GAP_MS) -> bytes:
             out += _delay(_millis(line))
         elif upper in NAMED:
             out += _key(NAMED[upper])
-        elif (pressed := _modifier_line(line)) is not None:
+        elif (pressed := _combo(line)) is not None:
             out += pressed
         elif "-" in line:
             out += _chord(line)
@@ -923,7 +931,7 @@ def guide_text() -> list[tuple[str, bool]]:
         (True, "GUI r"),
         (False, "Holds the Windows or Command key and taps r. WINDOWS r and WIN r are the same key. GUI alone taps the Windows key by itself. GUI-r still works."),
         (True, "CTRL c"),
-        (False, "Holds Control and taps c. CONTROL c is the same. CTRL ESC opens the Start menu. CTRL-c still works."),
+        (False, "Holds Control and taps c. CONTROL c is the same. CTRL ESC opens the Start menu. CTRL-ALT t and CTRL-c work too. Hyphens and spaces can be mixed."),
         (True, "ALT F4"),
         (False, "Holds Alt and taps F4, which closes the active window on Windows. F1 through F12 can be used alone or with a modifier."),
         (True, "SHIFT UP"),
@@ -2363,6 +2371,9 @@ def selftest() -> None:
         raise ScriptError("CTRL chord did not include the modifier on key up")
     if translate("CTRL c\n") != chord or translate("CONTROL c\n") != chord:
         raise ScriptError("CTRL c did not match the hyphen chord")
+    terminal = translate("CTRL-ALT t\n")
+    if terminal != translate("CTRL ALT t\n") or terminal != _key(UNSHIFTED["t"], MOD_LCTL | MOD_LALT):
+        raise ScriptError("CTRL-ALT t was not a Control-Alt chord")
     gui = translate("GUI r\n")
     if gui != _key(UNSHIFTED["r"], MOD_LGUI) or translate("WINDOWS r\n") != gui:
         raise ScriptError("GUI r did not hold the Windows key")

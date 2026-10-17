@@ -93,10 +93,9 @@ After that, hold layer 2 and hold **R** for about 400 ms to play. A second press
 
 ### 3. Set up the loader once
 
-From the repo root:
+From `Keyboard/script-replay`:
 
 ```bash
-cd Keyboard/script-replay
 python3 kvxkeyinject
 ```
 
@@ -114,36 +113,37 @@ sudo udevadm trigger
 
 The udev rule lets your user open raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, the tool fails with `claim failure`. Your user needs to be in the `users` group, which is what the rule grants access to. If you were just added to that group, the next start picks it up. Otherwise log out and back in.
 
+`e` and `n` open `nano`. If nano is missing, the log prints `sudo apt install nano`. The tool does not install it for you.
+
 ### 4. Where the scripts are
 
-The panel lists `examples/*.txt` and `scripts/*.txt`. A command such as `send` still reads **one file path**. It does not scan a folder.
+The panel always shows `examples` and `scripts` as folders. `f` adds another folder and remembers it under `scripts`, including the next time you start the tool. The paths are kept in `Keyboard/script-replay/scripts/.folders`.
 
 | Path | What it is |
 | --- | --- |
 | `Keyboard/script-replay/scripts/` | Your scripts. Put `.txt` files here. |
-| `Keyboard/script-replay/examples/` | The two samples shipped with the repo. |
+| `Keyboard/script-replay/scripts/.folders` | Folders added with `f`. One absolute path per line. |
+| `Keyboard/script-replay/examples/` | Samples shipped with the repo. |
 
-Run the tool from `Keyboard/script-replay`, and pass a path relative to that directory:
+The samples are `hello.txt`, `signoff.txt`, `windows-ping.txt`, `windows-notepad.txt`, `linux-echo.txt`, `edit-keys.txt`, and `repeat-line.txt`. What each one types is listed in [`script-replay/README.md`](script-replay/README.md).
 
-- `scripts/myscript.txt`
-- `examples/hello.txt` — one-line greeting
-- `examples/signoff.txt` — short sign-off
+A closed folder starts with `>`. An open folder starts with `↓`, and a line sits in front of each file inside it. Enter or Right opens a folder. Enter on a `.txt` file sends it. Left closes a folder or jumps back to its parent.
 
-`examples/hello.txt` is a one-line greeting. The `list` command lists USB devices at `4242:0003`. It does not list files.
+`kvxkeyinject` does not run the script on the Pi. It turns each line into key events and writes those events to the RP2040. If a line cannot be encoded, the activity log shows `error:` and the slot is left unchanged. The controller stores key down, key up, and delay events, up to 32 KB. The tool checks the slot size before it writes.
 
-A script is plain text. The Pi expands it; the controller stores key down, key up, and delay events, up to 32 KB of those events. The gap between characters is 10 ms. Lines starting with `#` are ignored.
+`STRING` types at full speed. `DELAY` and `DEFAULTDELAY` are how you wait. `REM` and `#` are comments. `STRINGLN` types a line and presses Enter. `GUI r`, `CTRL-ALT t`, `CTRL c`, and `WINDOWS GUI` are all accepted. The full command list is in [`script-replay/README.md`](script-replay/README.md).
 
 ```
-STRING Hello from the Hackberry.
+REM Open Run, then Command Prompt, then ping
+DEFAULTDELAY 200
+GUI r
+DELAY 500
+STRING cmd
 ENTER
-DELAY 200
-CTRL-c
-REPEAT 2
-STRING Again.
-ENDREPEAT
+DELAY 700
+STRING ping google.com
+ENTER
 ```
-
-Also accepted: `TAB`, `SPACE`, `BACKSPACE`, `ESC`, `DELETE`, `UP`, `DOWN`, `LEFT`, `RIGHT`, and `ALT-`, `SHIFT-`, `GUI-`, or `WIN-` chords.
 
 ### 5. Send a script
 
@@ -153,29 +153,37 @@ Left switch internal. From `Keyboard/script-replay`, fullscreen a terminal on th
 python3 kvxkeyinject
 ```
 
-That opens the panel. A fullscreen terminal on that display is about 80 columns by 40 rows: script list, a preview of the selected file, and an activity log.
+That opens the panel. A fullscreen terminal on that display is about 80 columns by 40 rows: a short script list, a large preview, and a small activity log.
 
 | Key | Action |
 | --- | --- |
-| j/k or arrows | select a script |
-| enter or s | send the selected script |
-| v | verify it against the slot |
+| j/k or arrows | move through the list |
+| u/i | scroll the open script. The counter can move to the last line |
+| enter or s | send the highlighted script, or open a folder |
+| r | read the script full screen |
+| e | edit it in nano |
+| n | new `.txt` file in the highlighted folder, then nano |
+| f | add a folder and keep it under `scripts` |
+| v | verify the slot against the file |
 | c | clear the slot |
 | p | ping |
-| i | USB name |
+| g | USB name |
 | l | list USB devices |
-| r | rescan the script folders |
+| h or ? | guide |
 | q | quit |
 
-Send and clear ask for `y` first. The same actions from the command line:
+On the read screen and the guide, `u`/`i` and `j`/`k` scroll, and `b` or `q` returns to the panel. Send and clear ask for `y` first.
+
+The same actions from the command line:
 
 ```bash
 .venv/bin/python kvxkeyinject ping
 .venv/bin/python kvxkeyinject send scripts/myscript.txt
 .venv/bin/python kvxkeyinject verify scripts/myscript.txt
+.venv/bin/python kvxkeyinject clear
 ```
 
-`ping` should print a status line. `send` prints progress. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
+`ping` should print a status line. `send` prints progress and refuses a script that does not fit the slot. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
 
 ### 6. Play it on the other computer
 
@@ -190,7 +198,7 @@ An empty slot does nothing. To load a different script, flip the switch back to 
 
 ### USB name
 
-Manufacturer and product strings can be changed from the Pi. They show up on the other computer after the next switch flip, because that flip re-enumerates the controller. VID and PID stay `4242:0003`. Names are up to 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected.
+Press `g` in the panel, or use the command line. Manufacturer and product strings show up on the other computer after the next switch flip, because that flip re-enumerates the controller. VID and PID stay `4242:0003`. Names are 1 to 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected.
 
 ```bash
 .venv/bin/python kvxkeyinject identity --manufacturer "Cedar Labs" --product "Field Keyboard"
@@ -198,7 +206,7 @@ Manufacturer and product strings can be changed from the Pi. They show up on the
 .venv/bin/python kvxkeyinject identity --reset
 ```
 
-`--random` picks a fictional label, such as `Cedar Labs` / `Field Board K240`.
+`--random` picks a fictional label, such as `Cedar Labs` / `Field Board K240`. In the name screen, `m` sets the manufacturer, `p` sets the product, `a` picks a random name, `x` resets both, and `b` goes back.
 
 ### Recovery
 

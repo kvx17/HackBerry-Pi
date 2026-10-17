@@ -1,5 +1,7 @@
 # Keyboard on HackberryPi_CM5
 
+The files in this folder are the stock Zitao UF2 and Vial layouts. The modified firmware, **Script play**, and the kvxducky script loader are documented in [Keyboard/Keyboard.md](/Keyboard/Keyboard.md) and [Keyboard/script-replay/README.md](/Keyboard/script-replay/README.md).
+
 There are currently 3 versions of keyboards for HackberryPi_CM5: Q10 Q20 and 9900 keyboards
 
 Different keyboard has its own style
