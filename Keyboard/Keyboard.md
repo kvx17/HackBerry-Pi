@@ -1,28 +1,26 @@
+# Hi, this mechanic reply that tuesday at latest will be able to chekc the car [https://maps.app.goo.gl/btF6KjdieMVzihvt5](https://maps.app.goo.gl/btF6KjdieMVzihvt5). 
 
-# Hackberry Pi CM5 — Modified Linux Layout  
+I'm going to the other mechanic after work (around 15) to ask if they can review it sooner. I will let you know. If he can't sooner would it be okay to go on Tuesday?  Hackberry Pi CM5 — Modified Linux Layout
+
 Custom key‑layer configuration for the Zitaotech's  [Hackberry Pi CM5](https://github.com/ZitaoTech/HackberryPiCM5/tree/main), focused on improving Linux terminal workflows and system control.
 
 ---
 
 ## Layer2 Additions (Linux‑Optimized)
 
-- **Ctrl+Shift+C** — assigned to **C key in layer 2**   
-  Standard Linux terminal copy shortcut.
-
+- **Ctrl+Shift+C** — assigned to **C key in layer 2**  
+Standard Linux terminal copy shortcut.
 - **Ctrl+Shift+V** — assigned to **X key in layer 2**  
-  Standard Linux terminal paste shortcut.
-
+Standard Linux terminal paste shortcut.
 - **Middle Click** — assigned to **Mouse Click in layer 2**  
-  Useful for closing tabs or pasting primary selection.
-
+Useful for closing tabs or pasting primary selection.
 - **Open Files** — assigned to **Z key in layer 2**  
-  Quick access to the file manager.
-
+Quick access to the file manager.
 - **Volume Down** — assigned to **E key in layer 2**
-
-- **Volume Up** — was assigned to **R key in layer 2**. [`script_play.vil`](script_play.vil) uses that key for **Script play**. Put volume up on another key in Vial if you still want it.
-
+- **Volume Up** — was assigned to **R key in layer 2**. `[script_play.vil](script_play.vil)` uses that key for **Script play**. Put volume up on another key in Vial if you still want it.
 - **Media Play/Pause** — assigned to **F key in layer 2**
+
+
 
 ## Layout Images
 
@@ -30,8 +28,9 @@ Custom key‑layer configuration for the Zitaotech's  [Hackberry Pi CM5](https:/
 ![Layer 1](layer1.png "Layer 1")
 ![Layer 2](layer2.png "Layer 2")
 
-
 ---
+
+
 
 ## kvxducky
 
@@ -81,9 +80,11 @@ Run option **3** on the other computer, from a copy of this repo. The script bui
 4. Press the Bootloader key you already assigned. The script copies the UF2 and waits until the drive disappears.
 5. Flip the switch back to **internal** before Vial, the keyboard check, or the script app. Those talk to the RP2040 only while it is connected to the CM5.
 
+
+
 ### 2. Put Script play on a key
 
-The key is layer 2, the **R** key, in [`script_play.vil`](script_play.vil). A keymap already saved in EEPROM does not gain that key from the UF2 alone.
+The key is layer 2, the **R** key, in `[script_play.vil](script_play.vil)`. A keymap already saved in EEPROM does not gain that key from the UF2 alone.
 
 1. Install [Vial](https://get.vial.today/) on the CM5.
 2. Left switch still internal.
@@ -93,17 +94,10 @@ After that, hold layer 2 and hold **R** for about 400 ms to play. A second press
 
 ### 3. Set up the loader once
 
-From `Keyboard/script-replay`:
+From the repo root:
 
 ```bash
-python3 kvxkeyinject
-```
-
-The loader used to be `hackberry_script.py`. The first run checks pyusb, libusb, the udev rule, and membership of the `users` group. It prints what is missing and the commands, and installs them only after you answer yes. That creates `.venv` when it is missing, installs `requirements.txt` there, and copies the udev rule with sudo.
-
-The same steps by hand:
-
-```bash
+cd Keyboard/script-replay
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 sudo cp 99-hackberry-script.rules /etc/udev/rules.d/
@@ -111,79 +105,73 @@ sudo udevadm control --reload
 sudo udevadm trigger
 ```
 
-The udev rule lets your user open raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, the tool fails with `claim failure`. Your user needs to be in the `users` group, which is what the rule grants access to. If you were just added to that group, the next start picks it up. Otherwise log out and back in.
-
-`e` and `n` open `nano`. If nano is missing, the log prints `sudo apt install nano`. The tool does not install it for you.
+The udev rule lets your user open raw HID interface 1. The boot keyboard stays with the kernel. Until the rule is installed, the tool fails with `claim failure`. Your user needs to be in the `users` group, which is what the rule grants access to.
 
 ### 4. Where the scripts are
 
-The panel always shows `examples` and `scripts` as folders. `f` adds another folder and remembers it under `scripts`, including the next time you start the tool. The paths are kept in `Keyboard/script-replay/scripts/.folders`.
+The tool reads **one file path**. It does not scan a folder.
 
-| Path | What it is |
-| --- | --- |
-| `Keyboard/script-replay/scripts/` | Your scripts. Put `.txt` files here. |
-| `Keyboard/script-replay/scripts/.folders` | Folders added with `f`. One absolute path per line. |
-| `Keyboard/script-replay/examples/` | Samples shipped with the repo. |
 
-The samples are `hello.txt`, `signoff.txt`, `windows-ping.txt`, `windows-notepad.txt`, `linux-echo.txt`, `edit-keys.txt`, and `repeat-line.txt`. What each one types is listed in [`script-replay/README.md`](script-replay/README.md).
+| Path                               | What it is                             |
+| ---------------------------------- | -------------------------------------- |
+| `Keyboard/script-replay/scripts/`  | Your scripts. Put `.txt` files here.   |
+| `Keyboard/script-replay/examples/` | The two samples shipped with the repo. |
 
-A closed folder starts with `>`. An open folder starts with `↓`, and a line sits in front of each file inside it. Enter or Right opens a folder. Enter on a `.txt` file sends it. Left closes a folder or jumps back to its parent.
 
-`kvxkeyinject` does not run the script on the Pi. It turns each line into key events and writes those events to the RP2040. If a line cannot be encoded, the activity log shows `error:` and the slot is left unchanged. The controller stores key down, key up, and delay events, up to 32 KB. The tool checks the slot size before it writes.
+Run the tool from `Keyboard/script-replay`, and pass a path relative to that directory:
 
-`STRING` types at full speed. `DELAY` and `DEFAULTDELAY` are how you wait. `REM` and `#` are comments. `STRINGLN` types a line and presses Enter. `GUI r`, `CTRL-ALT t`, `CTRL c`, and `WINDOWS GUI` are all accepted. The full command list is in [`script-replay/README.md`](script-replay/README.md).
+- `scripts/myscript.txt`
+- `examples/hello.txt` — one-line greeting
+- `examples/signoff.txt` — short sign-off
+
+`examples/hello.txt` is a one-line greeting. Menu option **7 list** lists USB devices at `4242:0003`. It does not list files.
+
+A script is plain text. The Pi expands it; the controller stores key down, key up, and delay events, up to 32 KB of those events. The gap between characters is 10 ms. Lines starting with `#` are ignored.
 
 ```
-REM Open Run, then Command Prompt, then ping
-DEFAULTDELAY 200
-GUI r
-DELAY 500
-STRING cmd
+STRING Hello from the Hackberry.
 ENTER
-DELAY 700
-STRING ping google.com
-ENTER
+DELAY 200
+CTRL-c
+REPEAT 2
+STRING Again.
+ENDREPEAT
 ```
+
+Also accepted: `TAB`, `SPACE`, `BACKSPACE`, `ESC`, `DELETE`, `UP`, `DOWN`, `LEFT`, `RIGHT`, and `ALT-`, `SHIFT-`, `GUI-`, or `WIN-` chords.
 
 ### 5. Send a script
 
-Left switch internal. From `Keyboard/script-replay`, fullscreen a terminal on the 720×720 display:
+Left switch internal. From `Keyboard/script-replay`:
 
 ```bash
-python3 kvxkeyinject
+.venv/bin/python hackberry_script.py ping
+.venv/bin/python hackberry_script.py send scripts/myscript.txt
+.venv/bin/python hackberry_script.py verify scripts/myscript.txt
 ```
 
-That opens the panel. A fullscreen terminal on that display is about 80 columns by 40 rows: a short script list, a large preview, and a small activity log.
+`ping` should print a status line. `send` prints progress. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
 
-| Key | Action |
-| --- | --- |
-| j/k or arrows | move through the list |
-| u/i | scroll the open script. The counter can move to the last line |
-| enter or s | send the highlighted script, or open a folder |
-| r | read the script full screen |
-| e | edit it in nano |
-| n | new `.txt` file in the highlighted folder, then nano |
-| f | add a folder and keep it under `scripts` |
-| v | verify the slot against the file |
-| c | clear the slot |
-| p | ping |
-| g | USB name |
-| l | list USB devices |
-| h or ? | guide |
-| q | quit |
-
-On the read screen and the guide, `u`/`i` and `j`/`k` scroll, and `b` or `q` returns to the panel. Send and clear ask for `y` first.
-
-The same actions from the command line:
+With no arguments the same actions are a menu:
 
 ```bash
-.venv/bin/python kvxkeyinject ping
-.venv/bin/python kvxkeyinject send scripts/myscript.txt
-.venv/bin/python kvxkeyinject verify scripts/myscript.txt
-.venv/bin/python kvxkeyinject clear
+.venv/bin/python hackberry_script.py
 ```
 
-`ping` should print a status line. `send` prints progress and refuses a script that does not fit the slot. `verify` checks length, CRC, and a read-back. A missing device, a claim failure, a short write, a bad CRC, or an ACK timeout is printed as that error.
+
+| Key | Action                             |
+| --- | ---------------------------------- |
+| 1   | ping                               |
+| 2   | status                             |
+| 3   | send — asks for a script file path |
+| 4   | verify — asks for the same path    |
+| 5   | clear the slot                     |
+| 6   | USB identity                       |
+| 7   | list USB devices                   |
+| q   | quit                               |
+
+
+For menu option 3 or 4, type the path, for example `scripts/myscript.txt` or `examples/hello.txt`.
 
 ### 6. Play it on the other computer
 
@@ -198,15 +186,15 @@ An empty slot does nothing. To load a different script, flip the switch back to 
 
 ### USB name
 
-Press `g` in the panel, or use the command line. Manufacturer and product strings show up on the other computer after the next switch flip, because that flip re-enumerates the controller. VID and PID stay `4242:0003`. Names are 1 to 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected.
+Manufacturer and product strings can be changed from the Pi. They show up on the other computer after the next switch flip, because that flip re-enumerates the controller. VID and PID stay `4242:0003`. Names are up to 28 printable ASCII characters. Logitech, Dell, Apple, Microsoft, and HP are rejected.
 
 ```bash
-.venv/bin/python kvxkeyinject identity --manufacturer "Cedar Labs" --product "Field Keyboard"
-.venv/bin/python kvxkeyinject identity --random
-.venv/bin/python kvxkeyinject identity --reset
+.venv/bin/python hackberry_script.py identity --manufacturer "Cedar Labs" --product "Field Keyboard"
+.venv/bin/python hackberry_script.py identity --random
+.venv/bin/python hackberry_script.py identity --reset
 ```
 
-`--random` picks a fictional label, such as `Cedar Labs` / `Field Board K240`. In the name screen, `m` sets the manufacturer, `p` sets the product, `a` picks a random name, `x` resets both, and `b` goes back.
+`--random` picks a fictional label, such as `Cedar Labs` / `Field Board K240`.
 
 ### Recovery
 
@@ -228,8 +216,7 @@ Same mount note as the flash step: if `RPI-RP2` is not under `/run/media/$USER/`
 
 If the boot key cannot be pressed, open the case and hold the RP2040 BOOTSEL button while the USB host connects, then copy that same stock UF2 onto `RPI-RP2`. For the Hackberry, the switch is internal and the internal USB link is already present, so hold BOOTSEL and reset the controller. For another computer, flip the switch to external, hold BOOTSEL, and plug in the bottom USB-C. Leave the `Zitao Repository` folder unchanged. After an external recovery, flip the switch back to internal before using the keyboard on the CM5.
 
-More detail is in [`script-replay/README.md`](script-replay/README.md).
+More detail is in `[script-replay/README.md](script-replay/README.md)`.
 
 ---
-
 
